@@ -1,4 +1,4 @@
-# src/rag_engine.py — RAG 엔진 유틸 + Google Drive 테스트 함수(완전본)
+# src/rag_engine.py — RAG 엔진 유틸 + Google Drive 테스트 + 공급자별 LLM/임베딩 설정
 
 from __future__ import annotations
 import os, json, shutil, re
@@ -8,34 +8,53 @@ import streamlit as st
 from src.config import settings
 
 # ============================================================================
-# 1) LLM/임베딩 설정 (LlamaIndex Settings)
+# 1) LLM/임베딩 설정 (공급자별)
 # ============================================================================
 
-def init_llama_settings(api_key: str, llm_model: str, embed_model: str, temperature: float = 0.0):
+def init_llama_settings(
+    provider: str,
+    api_key: str,
+    llm_model: str,
+    embed_model: str,
+    temperature: float = 0.0,
+):
     """
-    LlamaIndex 전역 Settings에 Google GenAI LLM/임베딩을 설정하고
-    임베딩 1회 호출로 키/네트워크를 간단 점검합니다.
+    공급자에 따라 LlamaIndex Settings에 임베딩을 설정하고,
+    사용할 LLM 객체를 반환합니다. (QueryEngine에 llm=...로 주입해 고정 사용)
+    - provider: "google" | "openai"
     """
     from llama_index.core import Settings
-    # 신식 Google GenAI 경로 (requirements: llama-index-llms-google-genai / -embeddings-google-genai)
-    from llama_index.llms.google_genai import GoogleGenAI
-    from llama_index.embeddings.google_genai import GoogleGenAIEmbedding
 
-    Settings.llm = GoogleGenAI(model=llm_model, api_key=api_key, temperature=temperature)
-    Settings.embed_model = GoogleGenAIEmbedding(model_name=embed_model, api_key=api_key)
-
-    # 임베딩 스모크 테스트 (키/네트워크/모델명 확인)
+    provider = (provider or "google").lower()
     try:
+        if provider == "openai":
+            from llama_index.llms.openai import OpenAI as _LLM
+            from llama_index.embeddings.openai import OpenAIEmbedding as _EMB
+
+            # OpenAI: 임베딩은 Settings에 설정, LLM 객체는 반환
+            Settings.embed_model = _EMB(model=embed_model, api_key=api_key)
+            llm = _LLM(model=llm_model, api_key=api_key, temperature=temperature)
+
+        else:
+            # 기본: Google GenAI
+            from llama_index.llms.google_genai import GoogleGenAI as _LLM
+            from llama_index.embeddings.google_genai import GoogleGenAIEmbedding as _EMB
+
+            Settings.embed_model = _EMB(model_name=embed_model, api_key=api_key)
+            llm = _LLM(model=llm_model, api_key=api_key, temperature=temperature)
+
+        # 임베딩 스모크 테스트 (키/모델/네트워크 확인)
         _ = Settings.embed_model.get_text_embedding("ping")
+        return llm
+
     except Exception as e:
-        st.error("임베딩 모델 점검 실패 — API 키/모델명/네트워크를 확인하세요.")
+        st.error("LLM/임베딩 초기화 실패 — 키/모델/패키지 설치를 확인하세요.")
         with st.expander("자세한 오류 보기", expanded=True):
             st.exception(e)
         st.stop()
 
-
 # ============================================================================
-# 2) Google Drive 연결 테스트/미리보기 유틸
+# 2) Google Drive 연결 테스트/미리보기
 # ============================================================================
 
 def _build_drive_service(creds_dict):
@@ -43,7 +62,6 @@ def _build_drive_service(creds_dict):
     from googleapiclient.discovery import build
     scopes = ["https://www.googleapis.com/auth/drive.readonly"]
     creds = service_account.Credentials.from_service_account_info(creds_dict, scopes=scopes)
-    # cache_discovery=False: Cloud 환경에서 캐시 충돌 방지
     return build("drive", "v3", credentials=creds, cache_discovery=False)
 
 def _normalize_sa(raw_sa: Any | None) -> Mapping[str, Any] | None:
@@ -69,6 +87,7 @@ def _normalize_sa(raw_sa: Any | None) -> Mapping[str, Any] | None:
             pass
         # private_key 보정
         try:
+            import re
             m = re.search(r'"private_key"\s*:\s*"(?P<key>.*?)"', s, re.DOTALL)
             if m:
                 key = m.group("key")
@@ -80,10 +99,6 @@ def _normalize_sa(raw_sa: Any | None) -> Mapping[str, Any] | None:
     return None
 
 def smoke_test_drive() -> tuple[bool, str]:
-    """
-    Drive 연결 스모크 테스트.
-    (ok, msg) 형태로 반환하여 UI에서 바로 표시 가능.
-    """
     folder_id = settings.GDRIVE_FOLDER_ID
     if not str(folder_id).strip():
         return (False, "GDRIVE_FOLDER_ID가 비었습니다. Secrets에 값을 추가하세요.")
@@ -94,17 +109,12 @@ def smoke_test_drive() -> tuple[bool, str]:
 
     try:
         svc = _build_drive_service(sa)
-        # 간단 확인: 폴더 ID 조회
         svc.files().get(fileId=folder_id, fields="id").execute()
         return (True, "Google Drive 연결 OK")
     except Exception as e:
         return (False, f"Drive 연결 점검 실패: {e}")
 
 def preview_drive_files(max_items: int = 10) -> tuple[bool, str, list[dict]]:
-    """
-    폴더 내 최신 파일 n개를 표로 보여주기 위한 헬퍼.
-    rows 예시: [{"name":..., "link":..., "mime":..., "modified":...}, ...]
-    """
     folder_id = settings.GDRIVE_FOLDER_ID
     sa = _normalize_sa(settings.GDRIVE_SERVICE_ACCOUNT_JSON)
     if not sa or not str(folder_id).strip():
@@ -135,21 +145,11 @@ def preview_drive_files(max_items: int = 10) -> tuple[bool, str, list[dict]]:
     except Exception as e:
         return (False, f"목록 조회 실패: {e}", [])
 
-
 # ============================================================================
 # 3) 인덱스 로딩/빌드 & 변경 감지(매니페스트)
 # ============================================================================
 
-@st.cache_resource(show_spinner=False)
-def _load_index_from_disk(persist_dir: str):
-    """디스크에 저장된 인덱스를 읽어옵니다."""
-    from llama_index.core import StorageContext, load_index_from_storage
-    storage_context = StorageContext.from_defaults(persist_dir=persist_dir)
-    index = load_index_from_storage(storage_context)
-    return index
-
 def _fetch_drive_manifest(creds_dict, folder_id: str) -> dict:
-    """드라이브 폴더 내 파일들의 '스냅샷(매니페스트)'를 가져옵니다."""
     svc = _build_drive_service(creds_dict)
     files = []
     page_token = None
@@ -189,7 +189,6 @@ def _save_local_manifest(path: str, m: dict) -> None:
         json.dump(m, fp, ensure_ascii=False, indent=2, sort_keys=True)
 
 def _manifests_differ(local: dict | None, remote: dict) -> bool:
-    """md5 있으면 md5, 없으면 modifiedTime 비교."""
     if local is None:
         return True
     if set(local.keys()) != set(remote.keys()):
@@ -203,33 +202,30 @@ def _manifests_differ(local: dict | None, remote: dict) -> bool:
             return True
     return False
 
+def _load_index_from_disk(persist_dir: str):
+    from llama_index.core import StorageContext, load_index_from_storage
+    storage_context = StorageContext.from_defaults(persist_dir=persist_dir)
+    return load_index_from_storage(storage_context)
+
 def _build_index_with_progress(update_pct: Callable[[int, str | None], None],
                                update_msg: Callable[[str], None],
                                gdrive_folder_id: str,
                                gcp_creds: Mapping[str, Any],
                                persist_dir: str):
-    """Drive → 문서 로드 → 인덱스 생성 → 디스크 저장"""
     from llama_index.core import VectorStoreIndex
     from llama_index.readers.google import GoogleDriveReader
 
     update_pct(5, "Google Drive 인증 준비")
     if not gcp_creds:
         st.error("❌ 서비스계정 JSON을 읽을 수 없습니다.")
-        with st.expander("문제 해결 가이드", expanded=True):
-            st.markdown(
-                "- **.streamlit/secrets.toml**의 `GDRIVE_SERVICE_ACCOUNT_JSON`이 유효한 JSON인지 확인하세요.\n"
-                "  - 특히 `private_key`는 실제 줄바꿈이 아니라 **`\\\\n` 이스케이프**가 되어 있어야 합니다.\n"
-                "  - 예시:\n"
-                '```toml\nGDRIVE_SERVICE_ACCOUNT_JSON = """{ "type":"service_account", ..., "private_key":"-----BEGIN PRIVATE KEY-----\\n...\\n-----END PRIVATE KEY-----\\n", ... }"""\n```'
-            )
         st.stop()
 
     update_pct(15, "Drive 리더 초기화")
     # 신/구 버전 모두 호환: 신형(service_account_key) → 실패 시 구형(gcp_creds_dict)
     try:
-        loader = GoogleDriveReader(service_account_key=gcp_creds)   # ✅ 신형 API
+        loader = GoogleDriveReader(service_account_key=gcp_creds)
     except TypeError:
-        loader = GoogleDriveReader(gcp_creds_dict=gcp_creds)        # ↩️ 구형 API 호환
+        loader = GoogleDriveReader(gcp_creds_dict=gcp_creds)
 
     update_pct(30, "문서 목록 불러오는 중")
     try:
@@ -271,16 +267,9 @@ def get_or_build_index(update_pct: Callable[[int, str | None], None],
                        raw_sa: Any | None,
                        persist_dir: str,
                        manifest_path: str):
-    """Drive 변경을 감지해 저장본을 쓰거나, 변경 시에만 재인덱싱."""
     gcp_creds = _normalize_sa(raw_sa)
     if not gcp_creds:
         st.error("서비스계정 JSON 파싱에 실패했습니다.")
-        with st.expander("도움말: 올바른 입력 예", expanded=True):
-            st.code(
-                'GDRIVE_SERVICE_ACCOUNT_JSON = """{ "type":"service_account", ..., '
-                '"private_key":"-----BEGIN PRIVATE KEY-----\\n...\\n-----END PRIVATE KEY-----\\n", ... }"""',
-                language="toml",
-            )
         st.stop()
 
     update_pct(5, "드라이브 변경 확인 중…")
@@ -303,15 +292,12 @@ def get_or_build_index(update_pct: Callable[[int, str | None], None],
     update_pct(100, "완료!")
     return idx
 
-
 # ============================================================================
 # 4) QA 유틸
 # ============================================================================
 
 def get_text_answer(query_engine, question: str, system_prompt: str) -> str:
-    """
-    선택된 페르소나 지침 + 사용자의 질문을 합쳐 쿼리하고, 출처 파일명을 함께 반환.
-    """
+    """선택된 페르소나 지침 + 사용자의 질문을 합쳐 쿼리하고, 출처 파일명을 함께 반환."""
     try:
         full_query = (
             f"{system_prompt}\n\n"
@@ -321,8 +307,6 @@ def get_text_answer(query_engine, question: str, system_prompt: str) -> str:
         )
         response = query_engine.query(full_query)
         answer_text = str(response)
-
-        # 출처 파일명 수집
         try:
             files = [n.metadata.get("file_name", "알 수 없음")
                      for n in getattr(response, "source_nodes", [])]
