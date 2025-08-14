@@ -3,7 +3,7 @@
 import streamlit as st
 import json
 from collections.abc import Mapping
-
+from src.rag_engine import smoke_test_drive, preview_drive_files
 from src.ui import load_css, render_header
 from src.rag_engine import smoke_test_drive
 
@@ -22,50 +22,29 @@ st.write("이제 여기서부터 RAG/Drive/관리자 기능을 단계적으로 �
 
 # === 🔗 Google Drive 연결 테스트 (베이스라인 알림 '바로 아래') ===
 st.markdown("## 🔗 Google Drive 연결 테스트")
+st.caption("버튼을 눌러 Drive 폴더 연결이 정상인지 확인하세요. 먼저 Secrets 설정과 폴더 공유(서비스계정 이메일 Viewer 이상)가 필요합니다.")
 
 col1, col2 = st.columns([0.35, 0.65])
 with col1:
-    if st.button("폴더 파일 미리보기 (최신 10개)"):
-        # secrets에서 서비스 계정 JSON을 dict로 안전 파싱
-        raw_sa = st.secrets.get("GDRIVE_SERVICE_ACCOUNT_JSON")
-
-        if isinstance(raw_sa, Mapping):
-            sa_info = dict(raw_sa)  # tables/dict 형태
-        elif isinstance(raw_sa, str):
-            try:
-                sa_info = json.loads(raw_sa) if raw_sa else None  # 문자열 JSON 형태
-            except Exception:
-                sa_info = None
+    if st.button("폴더 파일 미리보기 (최신 10개)", use_container_width=True):
+        ok, msg, rows = preview_drive_files(max_items=10)
+        if ok:
+            if rows:
+                st.dataframe(rows, use_container_width=True, height=360)
+            else:
+                st.warning("폴더에 파일이 없거나 접근할 수 없습니다.")
         else:
-            sa_info = None
-
-        folder_id = st.secrets.get("GDRIVE_FOLDER_ID")
-
-        if not sa_info:
-            st.error("❌ GDRIVE_SERVICE_ACCOUNT_JSON이 비어 있거나 형식이 잘못되었습니다.")
-        elif not folder_id:
-            st.error("❌ GDRIVE_FOLDER_ID가 설정되지 않았습니다.")
-        else:
-            try:
-                files = smoke_test_drive(sa_info, folder_id, limit=10)
-                if not files:
-                    st.warning("⚠️ 파일이 없거나 권한이 부족합니다. (폴더 공유/권한/폴더ID 확인)")
-                else:
-                    st.success(f"연결 OK! {len(files)}개 미리보기")
-                    for f in files:
-                        name = f.get("name")
-                        mime = f.get("mimeType")
-                        mtime = f.get("modifiedTime", "")[:19].replace("T", " ")
-                        st.write(f"• **{name}** — _{mime}, {mtime}_")
-            except Exception as e:
-                st.error("Google Drive 호출 중 오류가 발생했습니다.")
-                st.exception(e)
-
+            st.error(msg)
+            with st.expander("문제 해결 가이드"):
+                st.write("- `GDRIVE_FOLDER_ID` / 서비스계정 JSON(secrets) 값을 확인하세요.")
+                st.write("- Google Drive에서 **서비스계정 이메일(client_email)** 에 폴더 ‘보기 권한’을 공유하세요.")
+                st.write("- `requirements.txt`에 Drive 관련 라이브러리를 추가하고 다시 배포하세요.")
 with col2:
-    st.info(
-        "버튼을 눌러 Drive 폴더 연결이 정상인지 확인하세요. 먼저 **Secrets** 설정과 "
-        "**폴더 공유(서비스 계정 이메일 Viewer 이상)** 가 필요합니다."
-    )
+    ok, msg = smoke_test_drive()
+    if ok:
+        st.success(msg)
+    else:
+        st.warning(msg)
 # === /Google Drive 연결 테스트 ===
 
 
