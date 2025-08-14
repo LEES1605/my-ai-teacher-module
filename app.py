@@ -357,9 +357,10 @@ for m in ss.messages:
         st.markdown(m["content"])
 
 def _strip_sources(text: str) -> str:
+    # 하단 참고자료 블록 제거
     return re.sub(r"\n+---\n\*참고 자료:.*$", "", text, flags=re.DOTALL)
 
-# === [NEW] 최근 대화 맥락 구성기 =========================================
+# === 최근 대화 맥락 구성기 =========================================
 def _build_context_for_models(messages: list[dict], limit_pairs: int = 2, max_chars: int = 2000) -> str:
     """
     최근 user/assistant 쌍을 limit_pairs개까지 모아 모델에 건네줄 맥락 문자열 생성.
@@ -391,11 +392,7 @@ def _build_context_for_models(messages: list[dict], limit_pairs: int = 2, max_ch
     if len(ctx) > max_chars:
         ctx = ctx[-max_chars:]
     return ctx
-# ======================================================================
-
-# 공통: 로그 저장 함수(실패해도 앱 중단 X)
-def _log_try(items):
-
+# ==================================================================
 
 # 공통: JSONL 로그 저장(실패해도 앱 중단 X)
 def _log_try(items):
@@ -422,16 +419,15 @@ if user_input:
     # JSONL 로그: 사용자
     _log_try([chat_store.make_entry(ss.session_id, "user", "user", user_input, mode, model="user")])
 
-   # 1) Gemini 1차 (최근 맥락 + 현재 질문)
-with st.spinner("🤖 Gemini 선생님이 먼저 답변합니다…"):
-    # 현재 user_input은 이미 ss.messages에 추가된 상태 → 직전까지의 맥락을 사용
-    prev_ctx = _build_context_for_models(ss.messages[:-1], limit_pairs=2, max_chars=2000)
-    gemini_query = (f"[이전 대화]\n{prev_ctx}\n\n" if prev_ctx else "") + f"[학생 질문]\n{user_input}"
-    ans_g = get_text_answer(ss["qe_google"], gemini_query, _persona())
-content_g = f"**🤖 Gemini**\n\n{ans_g}"
-ss.messages.append({"role": "assistant", "content": content_g})
-with st.chat_message("assistant"):
-    st.markdown(content_g)
+    # 1) Gemini 1차 (최근 맥락 + 현재 질문)
+    with st.spinner("🤖 Gemini 선생님이 먼저 답변합니다…"):
+        prev_ctx = _build_context_for_models(ss.messages[:-1], limit_pairs=2, max_chars=2000)
+        gemini_query = (f"[이전 대화]\n{prev_ctx}\n\n" if prev_ctx else "") + f"[학생 질문]\n{user_input}"
+        ans_g = get_text_answer(ss["qe_google"], gemini_query, _persona())
+    content_g = f"**🤖 Gemini**\n\n{ans_g}"
+    ss.messages.append({"role": "assistant", "content": content_g})
+    with st.chat_message("assistant"):
+        st.markdown(content_g)
 
     # JSONL 로그: Gemini
     _log_try([chat_store.make_entry(
@@ -439,44 +435,42 @@ with st.chat_message("assistant"):
         model=getattr(settings, "LLM_MODEL", "gemini")
     )])
 
-    # 2) ChatGPT 보완/검증 (RAG 없이 LLM 직답)
-# 2) ChatGPT 보완/검증 (있을 때) — RAG 없이, Gemini 답변을 읽고 보완
-if ready_openai:
-    from src.rag_engine import llm_complete
+    # 2) ChatGPT 보완/검증 (RAG 없이, Gemini 답변을 읽고 보완)
+    if ready_openai:
+        from src.rag_engine import llm_complete
 
-    review_directive = (
-        "역할: 당신은 동료 AI 영어교사입니다.\n"
-        "목표: [이전 대화], [학생 질문], [동료의 1차 답변]을 읽고, 사실오류/빠진점/모호함을 교정·보완합니다.\n"
-        "지침:\n"
-        "1) 핵심만 간결히 재정리\n"
-        "2) 틀린 부분은 근거와 함께 바로잡기\n"
-        "3) 이해를 돕는 예문 2~3개 추가 (가능하면 학습자의 모국어 대비 포인트)\n"
-        "4) 마지막에 <최종 정리> 섹션으로 한눈 요약\n"
-        "금지: 새로운 외부 검색/RAG. 제공된 내용과 교사 지식만 사용.\n"
-    )
-
-    prev_ctx = _build_context_for_models(ss.messages, limit_pairs=2, max_chars=2000)  # ← Gemini 방금 답 포함
-    augmented = (
-        (f"[이전 대화]\n{prev_ctx}\n\n" if prev_ctx else "") +
-        f"[학생 질문]\n{user_input}\n\n"
-        f"[동료의 1차 답변(Gemini)]\n{_strip_sources(ans_g)}\n\n"
-        f"[당신의 작업]\n위 기준으로만 보완/검증하라."
-    )
-
-    with st.spinner("🤝 ChatGPT 선생님이 보완/검증 중…"):
-        ans_o = llm_complete(
-            ss.get("llm_openai"),
-            _persona() + "\n\n" + review_directive + "\n\n" + augmented
+        review_directive = (
+            "역할: 당신은 동료 AI 영어교사입니다.\n"
+            "목표: [이전 대화], [학생 질문], [동료의 1차 답변]을 읽고, 사실오류/빠진점/모호함을 교정·보완합니다.\n"
+            "지침:\n"
+            "1) 핵심만 간결히 재정리\n"
+            "2) 틀린 부분은 근거와 함께 바로잡기\n"
+            "3) 이해를 돕는 예문 2~3개 추가 (가능하면 학습자의 모국어 대비 포인트)\n"
+            "4) 마지막에 <최종 정리> 섹션으로 한눈 요약\n"
+            "금지: 새로운 외부 검색/RAG. 제공된 내용과 교사 지식만 사용.\n"
         )
 
-    content_o = f"**🤖 ChatGPT**\n\n{ans_o}"
-    ss.messages.append({"role": "assistant", "content": content_o})
-    with st.chat_message("assistant"):
-        st.markdown(content_o)
-else:
-    with st.chat_message("assistant"):
-        st.info("ChatGPT 키가 없어 Gemini만 응답했습니다. OPENAI_API_KEY를 추가하면 보완/검증이 활성화됩니다.")
+        prev_ctx = _build_context_for_models(ss.messages, limit_pairs=2, max_chars=2000)  # Gemini 방금 답 포함
+        augmented = (
+            (f"[이전 대화]\n{prev_ctx}\n\n" if prev_ctx else "") +
+            f"[학생 질문]\n{user_input}\n\n"
+            f"[동료의 1차 답변(Gemini)]\n{_strip_sources(ans_g)}\n\n"
+            f"[당신의 작업]\n위 기준으로만 보완/검증하라."
+        )
 
+        with st.spinner("🤝 ChatGPT 선생님이 보완/검증 중…"):
+            ans_o = llm_complete(
+                ss.get("llm_openai"),
+                _persona() + "\n\n" + review_directive + "\n\n" + augmented
+            )
+
+        content_o = f"**🤖 ChatGPT**\n\n{ans_o}"
+        ss.messages.append({"role": "assistant", "content": content_o})
+        with st.chat_message("assistant"):
+            st.markdown(content_o)
+    else:
+        with st.chat_message("assistant"):
+            st.info("ChatGPT 키가 없어 Gemini만 응답했습니다. OPENAI_API_KEY를 추가하면 보완/검증이 활성화됩니다.")
 
     # ✅ Drive Markdown 대화 로그 자동 저장 (공유드라이브의 데이터 폴더 내 chat_log/)
     if ss.auto_save_chatlog and ss.messages:
