@@ -1,7 +1,10 @@
+# .streamlit/config.toml  (전체 교체용)
+
 [server]
 fileWatcherType = "none"
 enableWebsocketCompression = false
-[runner]
-runOnSave = false
+
 [client]
 toolbarMode = "minimal"
+
+# [runner] 섹션은 더 이상 사용하지 않습니다 (runOnSave 폐지)
