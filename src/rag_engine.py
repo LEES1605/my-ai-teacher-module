@@ -59,7 +59,7 @@ def preview_drive_files(max_items=10):
 
         res = service.files().list(
             q=f"'{folder_id}' in parents and trashed=false",
-            fields="files(id,name,mimeType,modifiedTime,owners(emailAddress,displayName))",
+            fields="files(id,name,mimeType,modifiedTime,webViewLink)",
             pageSize=max_items,
             supportsAllDrives=True,
             includeItemsFromAllDrives=True,
@@ -72,6 +72,7 @@ def preview_drive_files(max_items=10):
                 "name": f.get("name"),
                 "mime": f.get("mimeType"),
                 "modified": f.get("modifiedTime"),
+                "link": f.get("webViewLink"),  # ← 추가
             }
             for f in files
         ]
