@@ -7,14 +7,14 @@ google-api-python-client
 google-auth
 google-auth-httplib2
 
-# --- LlamaIndex (버전 호환 세트; core 0.12.x 라인) ---
+# --- LlamaIndex (0.12.x 라인 권장 세트) ---
 llama-index-core==0.12.52
 llama-index-llms-gemini==0.4.10
 llama-index-embeddings-google==0.3.1
 llama-index-readers-google==0.6.1
 
-# --- Google GenAI SDK (이 세트에 맞는 범위) ---
-google-generativeai==0.5.2
+# --- Google GenAI SDK (RequestOptions 포함 버전) ---
+google-generativeai==0.8.4
 
 # --- 호환 이슈 예방 ---
 protobuf<5
