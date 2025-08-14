@@ -93,15 +93,45 @@ def preview_drive_files(max_items: int = 10) -> tuple[bool, str, list[dict]]:
 def init_llama_settings(api_key: str, llm_model: str, embed_model: str, temperature: float = 0.0):
     """
     LlamaIndex 전역 Settings에 Google GenAI LLM/임베딩을 설정.
-    임베딩 1회 호출로 키/네트워크 스모크 테스트.
+    - 버전에 따라 모듈 경로가 다를 수 있어 동적으로 import 시도한다.
     """
     from llama_index.core import Settings
-    from llama_index.llms.google_genai import GoogleGenAI
-    from llama_index.embeddings.google_genai import GoogleGenAIEmbedding
+    import importlib.util as _il
 
-    Settings.llm = GoogleGenAI(model=llm_model, api_key=api_key, temperature=temperature)
-    Settings.embed_model = GoogleGenAIEmbedding(model_name=embed_model, api_key=api_key)
+    # 1) LLM: google_genai (구버전) → gemini (신버전) 순서로 시도
+    llm = None
+    if _il.find_spec("llama_index.llms.google_genai"):
+        from llama_index.llms.google_genai import GoogleGenAI as _LLM
+        llm = _LLM(model=llm_model, api_key=api_key, temperature=temperature)
+    elif _il.find_spec("llama_index.llms.gemini"):
+        from llama_index.llms.gemini import Gemini as _LLM
+        llm = _LLM(model=llm_model, api_key=api_key, temperature=temperature)
+    else:
+        st.error(
+            "LLM 모듈을 찾을 수 없습니다. requirements.txt에 "
+            "`llama-index-llms-gemini` (또는 구버전이면 `llama-index-llms-google-genai`)를 추가하세요."
+        )
+        st.stop()
 
+    # 2) Embedding: google_genai (구버전) → google (신버전) 순서로 시도
+    embed = None
+    if _il.find_spec("llama_index.embeddings.google_genai"):
+        from llama_index.embeddings.google_genai import GoogleGenAIEmbedding as _EMB
+        embed = _EMB(model_name=embed_model, api_key=api_key)
+    elif _il.find_spec("llama_index.embeddings.google"):
+        from llama_index.embeddings.google import GoogleEmbedding as _EMB
+        embed = _EMB(model_name=embed_model, api_key=api_key)
+    else:
+        st.error(
+            "임베딩 모듈을 찾을 수 없습니다. requirements.txt에 "
+            "`llama-index-embeddings-google`를 추가하세요."
+        )
+        st.stop()
+
+    Settings.llm = llm
+    Settings.embed_model = embed
+
+    # 간단 스모크 테스트 (임베딩 1회)
     try:
         _ = Settings.embed_model.get_text_embedding("ping")
     except Exception as e:
