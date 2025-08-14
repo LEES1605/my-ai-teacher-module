@@ -1,5 +1,20 @@
-streamlit==1.37.1
-google-auth==2.40.3
-google-api-python-client==2.178.0
-google-auth-httplib2==0.2.0
-httplib2==0.22.0
+# --- Streamlit runtime ---
+streamlit>=1.33
+pandas
+
+# --- Google Drive API ---
+google-api-python-client
+google-auth
+google-auth-httplib2
+
+# --- LlamaIndex (모듈식) ---
+llama-index-core
+llama-index-llms-google-genai
+llama-index-embeddings-google
+llama-index-readers-google
+
+# --- Google GenAI SDK (내부에서 사용) ---
+google-generativeai
+
+# --- 호환 문제 방지 ---
+protobuf<5
