@@ -13,6 +13,46 @@ os.environ.setdefault("TQDM_DISABLE", "1")
 import streamlit as st
 from src.config import settings
 
+# --- [NEW] 출처 파일명 추출 유틸 -------------------------------
+def _source_names_from_nodes(nodes):
+    """
+    LlamaIndex 응답의 source_nodes에서 안전하게 파일명을 뽑아낸다.
+    1) metadata의 다양한 키 시도
+    2) file_id만 있을 경우, 로컬 Drive 매니페스트(settings.MANIFEST_PATH)를 활용
+    """
+    import json, os
+    names = set()
+
+    # 1) 로컬 매니페스트 로드(있으면)
+    manifest = {}
+    try:
+        if os.path.exists(settings.MANIFEST_PATH):
+            with open(settings.MANIFEST_PATH, "r", encoding="utf-8") as fp:
+                manifest = json.load(fp)
+    except Exception:
+        manifest = {}
+
+    # 2) 노드 메타 파싱
+    for n in (nodes or []):
+        meta = getattr(n, "metadata", {}) or {}
+        # 흔히 쓰이는 후보 키들을 차례로 확인
+        for k in ("file_name", "filename", "file", "source", "file_path", "document"):
+            v = meta.get(k)
+            if isinstance(v, str) and v.strip():
+                names.add(v.strip())
+                break
+        else:
+            # 위 키들에 실패했다면 file_id류로 매니페스트 매핑
+            fid = meta.get("file_id") or meta.get("id") or meta.get("drive_file_id")
+            if isinstance(fid, str) and fid in manifest:
+                v = manifest[fid].get("name")
+                if isinstance(v, str) and v.strip():
+                    names.add(v.strip())
+
+    return ", ".join(sorted(names)) if names else "출처 정보 없음"
+
+# ---------------------------------------------------------------
+
 # (선택) llama_index 로그 억제 — 과도한 디버그 출력 방지
 import logging
 logging.getLogger("llama_index").setLevel(logging.WARNING)
