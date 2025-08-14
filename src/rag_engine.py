@@ -170,4 +170,53 @@ def preview_drive_files(
         email = getattr(creds, "service_account_email", "unknown@serviceaccount")
 
         @st.cache_data(ttl=60)
-        def _list_files_cached(fid: str, max_items: int, svc_email: str) -> list_
+        def _list_files_cached(fid: str, max_items: int, svc_email: str) -> list[dict]:
+            """
+            60초 캐시된 파일 목록 조회.
+            캐시 함수 내부에서 service를 매번 생성해도 비용이 작고 안전함.
+            """
+            service = _build_drive_service(_load_creds())
+            resp = service.files().list(
+                q=f"'{fid}' in parents and trashed=false",
+                orderBy="modifiedTime desc",
+                fields="files(id,name,mimeType,modifiedTime,webViewLink)",
+                pageSize=max_items,
+                supportsAllDrives=True,
+                includeItemsFromAllDrives=True,
+                corpora="allDrives",
+            ).execute()
+            return resp.get("files", [])
+
+        files = _list_files_cached(fid, max_items, email)
+        rows = _format_rows(files)
+
+        if not rows:
+            msg = (
+                "폴더에 파일이 없거나 접근 권한이 없습니다.\n"
+                "→ 1) 폴더에 테스트 파일을 하나 넣어보세요.\n"
+                "→ 2) 해당 폴더를 서비스계정 이메일과 공유했는지 확인하세요.\n"
+                "     (Google Drive에서 '공유' → 사용자 초대에 서비스계정 이메일 추가)\n"
+                "→ 3) 공유 드라이브(팀 드라이브)라면, 접근 권한과 조직 정책을 확인하세요."
+            )
+            return True, msg, rows
+
+        return True, f"최근 파일 {len(rows)}건.", rows
+
+    except Exception as e:
+        return False, f"목록 조회 중 오류: {e}", []
+
+
+# ---- (옵션) 간단 데모용 진입점 -------------------------------------------------
+if __name__ == "__main__":
+    """
+    로컬에서 간단 실행해 상태를 점검할 때:
+      $ python -m src.rag_engine
+    (단, 이 방법은 Streamlit st.secrets가 없어 실패할 수 있습니다.)
+    """
+    ok, msg = smoke_test_drive()
+    print("[smoke_test_drive]", ok, msg)
+    ok, msg, rows = preview_drive_files(max_items=5)
+    print("[preview_drive_files]", ok, msg)
+    for r in rows:
+        print(" -", r["modified"], r["name"], r["mime"])
+# ===== END OF FILE ============================================================
