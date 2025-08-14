@@ -17,6 +17,10 @@ st.set_page_config(
 load_css()
 render_header()
 
+with st.expander("🔐 디버그: 현재 보이는 secrets 키"):
+    st.write(sorted(st.secrets.keys()))
+
+
 st.info("✅ 베이스라인 확인용 화면입니다. 이 화면이 보이면 모듈 구조가 정상입니다.")
 st.write("이제 여기서부터 RAG/Drive/관리자 기능을 단계적으로 붙여갑니다.")
 
