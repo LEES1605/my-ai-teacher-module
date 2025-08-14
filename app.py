@@ -507,16 +507,24 @@ if user_input:
         with st.chat_message("assistant"):
             st.info("ChatGPT 키가 없어 Gemini만 응답했습니다. OPENAI_API_KEY를 추가하면 보완/검증이 활성화됩니다.")
 
-    # ✅ Drive Markdown 대화 로그 자동 저장 (공유드라이브의 데이터 폴더 내 chat_log/)
-    if ss.auto_save_chatlog and ss.messages:
-        try:
-            save_chatlog_markdown(
-                ss.session_id,
-                ss.messages,
-                parent_folder_id=(getattr(settings, "CHATLOG_FOLDER_ID", None) or settings.GDRIVE_FOLDER_ID),
-            )
-            st.toast("Drive에 대화 저장 완료 (chat_log/)", icon="💾")
-        except Exception as e:
-            st.caption(f"⚠️ Drive 저장 실패: {e}")
+# ✅ Drive Markdown 대화 로그 자동 저장 (공유드라이브의 데이터 폴더 내 chat_log/)
+if ss.auto_save_chatlog and ss.messages:
+    try:
+        parent_id = (getattr(settings, "CHATLOG_FOLDER_ID", None) or settings.GDRIVE_FOLDER_ID)
+        sa = settings.GDRIVE_SERVICE_ACCOUNT_JSON
+        if isinstance(sa, str):
+            try:
+                sa = json.loads(sa)
+            except Exception:
+                pass
 
+        save_chatlog_markdown(
+            ss.session_id,
+            ss.messages,
+            parent_folder_id=parent_id,
+            sa_json=sa,   # ← 반드시 추가
+        )
+        st.toast("Drive에 대화 저장 완료 (chat_log/)", icon="💾")
+    except Exception as e:
+        st.caption(f"⚠️ Drive 저장 실패: {e}")
     st.rerun()
