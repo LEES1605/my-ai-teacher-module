@@ -1,5 +1,5 @@
 # --- Streamlit runtime ---
-streamlit>=1.33
+streamlit>=1.48
 pandas
 
 # --- Google Drive API ---
@@ -7,14 +7,14 @@ google-api-python-client
 google-auth
 google-auth-httplib2
 
-# --- LlamaIndex (0.12.x 라인 권장 세트) ---
+# --- LlamaIndex (신 SDK 경로: google-genai) ---
 llama-index-core==0.12.52
-llama-index-llms-gemini==0.4.10
-llama-index-embeddings-google==0.3.1
-llama-index-readers-google==0.6.1
+llama-index-llms-google-genai==0.2.4
+llama-index-embeddings-google-genai==0.2.1
+llama-index-readers-google==0.6.2
 
-# --- Google GenAI SDK (RequestOptions 포함 버전) ---
-google-generativeai==0.8.4
+# --- Google GenAI SDK (신식; 구 'google-generativeai' 아님) ---
+google-genai
 
 # --- 호환 이슈 예방 ---
 protobuf<5
