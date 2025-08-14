@@ -47,4 +47,59 @@ def _get(key: str, default: Any = "") -> Any:
         return env
     return default
 
-def _get_
+def _get_jsonish(key: str) -> Any:
+    """
+    서비스계정 JSON처럼 dict 또는 JSON 문자열 둘 다 허용.
+    그대로 반환(스트링이면 그대로, 매핑이면 그대로).
+    """
+    v = _get(key, "")
+    # str이면 그대로, 매핑이면 그대로. (rag_engine에서 str/dict 모두 처리)
+    return v
+
+class _Settings:
+    # --- 필수/주요 ---
+    GEMINI_API_KEY: SecretStr
+    GDRIVE_FOLDER_ID: str
+    GDRIVE_SERVICE_ACCOUNT_JSON: Any  # str(JSON) 또는 dict
+
+    # --- LLM/RAG 기본값(없으면 폴백) ---
+    LLM_MODEL: str
+    EMBED_MODEL: str
+    RESPONSE_MODE: str
+    SIMILARITY_TOP_K: int
+
+    # --- 경로(위 상수를 settings에서도 접근하도록)---
+    PERSIST_DIR: str = PERSIST_DIR
+    MANIFEST_PATH: str = MANIFEST_PATH
+
+    def __init__(self) -> None:
+        # 필수 키(없으면 빈 문자열 → 상위 로직에서 에러 처리)
+        self.GEMINI_API_KEY = SecretStr(_get("GEMINI_API_KEY", ""))
+        self.GDRIVE_FOLDER_ID = str(_get("GDRIVE_FOLDER_ID", "")).strip()
+        self.GDRIVE_SERVICE_ACCOUNT_JSON = _get_jsonish("GOOGLE_SERVICE_ACCOUNT_JSON")
+
+        # 기본 모델/옵션 (필요시 secrets/환경변수로 덮어쓰기 가능)
+        self.LLM_MODEL = str(_get("LLM_MODEL", "gemini-1.5-pro")).strip()
+        # 임베딩 모델 명칭은 프로젝트에 맞게 조정(예: "text-embedding-004" 등)
+        self.EMBED_MODEL = str(_get("EMBED_MODEL", "text-embedding-004")).strip()
+        self.RESPONSE_MODE = str(_get("RESPONSE_MODE", "compact")).strip()
+        try:
+            self.SIMILARITY_TOP_K = int(_get("SIMILARITY_TOP_K", 5))
+        except Exception:
+            self.SIMILARITY_TOP_K = 5
+
+# 외부에서 import할 settings 싱글턴
+settings = _Settings()
+
+# 외부에서 바로 참조하고 싶을 때를 위한 __all__
+__all__ = [
+    "APP_DATA_DIR",
+    "PERSIST_DIR",
+    "MANIFEST_PATH",
+    "BRAND_COLOR",
+    "TITLE_TEXT",
+    "TITLE_SIZE_REM",
+    "LOGO_HEIGHT_PX",
+    "SecretStr",
+    "settings",
+]
