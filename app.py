@@ -1,5 +1,13 @@
 # app.py — 그룹토론(항상 ON) + 인덱싱 재개(Resume) + 준비 취소/종료
 #          + Google Drive 대화 로그(.jsonl) 저장
+# 런타임 안정화(Cloud 재시작 루프/지연 방지)
+os.environ["STREAMLIT_SERVER_FILE_WATCHER_TYPE"] = "none"
+# os.environ["STREAMLIT_RUN_ON_SAVE"] = "false"  # (삭제됨: Streamlit 1.48+에서 폐지된 옵션)
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+os.environ["STREAMLIT_SERVER_ENABLE_WEBSOCKET_COMPRESSION"] = "false"
+
+import time
+import streamlit as st
 
 import streamlit as st
 import pandas as pd
