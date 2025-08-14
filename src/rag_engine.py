@@ -1,9 +1,10 @@
-# src/rag_engine.py — RAG 유틸(임베딩 1회 + LLM 2개) + 취소 지원 + 재개(Resume) 체크포인트
-#                     콘솔 진행바 억제(TQDM_DISABLE), 부분 persist, 변경 감지(매니페스트)
-#                     ✅ 첫 실행/비정상 저장소에서 FileNotFound 자동 복구
+# src/rag_engine.py — RAG 유틸(임베딩 1회 + LLM 2개) + 취소/재개 + Google Docs Export 지원
+#  - tqdm 콘솔 진행바 억제(TQDM_DISABLE)
+#  - Google Docs/Sheets/Slides는 Drive "export"로 텍스트/CSV 변환 후 인덱싱
+#  - 첫 실행/깨진 저장소 자동 복구
 
 from __future__ import annotations
-import os, json, shutil, re, hashlib
+import os, json, shutil, re, hashlib, io
 from typing import Callable, Any, Mapping, Iterable
 
 # 🔇 tqdm(콘솔 진행바) 억제 — Streamlit Cloud 로그 스팸/워커부하 완화
@@ -15,6 +16,17 @@ from src.config import settings
 # (선택) llama_index 로그 억제 — 과도한 디버그 출력 방지
 import logging
 logging.getLogger("llama_index").setLevel(logging.WARNING)
+
+# Google API
+from googleapiclient.http import MediaIoBaseDownload
+from googleapiclient.errors import HttpError
+
+# llama_index
+from llama_index.core import Settings
+from llama_index.core.storage.storage_context import StorageContext
+from llama_index.core import load_index_from_storage, VectorStoreIndex
+from llama_index.core.node_parser import SentenceSplitter
+from llama_index.core.schema import Document
 
 # 취소 신호용 예외
 class CancelledError(Exception):
@@ -56,7 +68,10 @@ def _normalize_sa(raw_sa: Any | None) -> Mapping[str, Any] | None:
 def _build_drive_service(creds_dict):
     from google.oauth2 import service_account
     from googleapiclient.discovery import build
-    scopes = ["https://www.googleapis.com/auth/drive.readonly"]
+    scopes = [
+        "https://www.googleapis.com/auth/drive.readonly",
+        "https://www.googleapis.com/auth/drive.file",  # export에도 필요
+    ]
     creds = service_account.Credentials.from_service_account_info(creds_dict, scopes=scopes)
     return build("drive", "v3", credentials=creds, cache_discovery=False)
 
@@ -66,7 +81,6 @@ def _build_drive_service(creds_dict):
 
 def set_embed_provider(provider: str, api_key: str, embed_model: str):
     """임베딩 공급자만 지정해 Settings.embed_model 설정"""
-    from llama_index.core import Settings
     p = (provider or "google").lower()
     try:
         if p == "openai":
@@ -75,7 +89,6 @@ def set_embed_provider(provider: str, api_key: str, embed_model: str):
         else:
             from llama_index.embeddings.google_genai import GoogleGenAIEmbedding as _EMB
             Settings.embed_model = _EMB(model_name=embed_model, api_key=api_key)
-
         # 스모크 테스트
         _ = Settings.embed_model.get_text_embedding("ping")
     except Exception as e:
@@ -150,7 +163,7 @@ def preview_drive_files(max_items: int = 10) -> tuple[bool, str, list[dict]]:
         return (False, f"목록 조회 실패: {e}", [])
 
 # =============================================================================
-# 3) 매니페스트/체크포인트 + 인덱싱(Resume 지원)
+# 3) 매니페스트/체크포인트 + 인덱싱(Resume 지원) + Google Docs Export
 # =============================================================================
 
 def _fetch_drive_manifest(creds_dict, folder_id: str, is_cancelled: Callable[[], bool] | None = None) -> dict:
@@ -242,30 +255,21 @@ def _clear_ckpt(persist_dir: str) -> None:
 @st.cache_resource(show_spinner=False)
 def _load_index_from_disk(persist_dir: str):
     """저장된 인덱스를 로드. 실패 시 깨끗한 저장소로 자동 초기화."""
-    from llama_index.core import StorageContext, load_index_from_storage
     try:
         storage_context = StorageContext.from_defaults(persist_dir=persist_dir)
         return load_index_from_storage(storage_context)
     except Exception:
-        # ✅ 폴백: 비어있는 저장소를 초기화하여 이후 재생성/삽입이 가능하게 한다.
         return _ensure_index_initialized(persist_dir)
 
 def _ensure_index_initialized(persist_dir: str):
-    """
-    ✅ 빈 인덱스를 메모리에 만들고, 해당 persist_dir로 최초 persist하여
-    docstore.json 등 기본 파일을 생성한다. (첫 실행/깨진 저장소 자동 복구)
-    """
-    from llama_index.core import StorageContext, VectorStoreIndex
+    """빈 인덱스를 메모리에 만들고, 지정 경로로 최초 persist(필수 파일 생성)."""
     os.makedirs(persist_dir, exist_ok=True)
-    # 빈 인덱스를 '메모리' 컨텍스트에서 만들고…
     storage_context = StorageContext.from_defaults()
     index = VectorStoreIndex.from_documents([], storage_context=storage_context)
-    # …지정한 경로로 최초 persist(필수 파일 생성)
     index.storage_context.persist(persist_dir=persist_dir)
     return index
 
 def _iter_drive_file_ids(manifest: dict) -> Iterable[str]:
-    """파일 ID를 최신순으로 정렬해서 반환(큰 파일/최근 파일부터 처리 효과)"""
     items = []
     for fid, meta in manifest.items():
         items.append((meta.get("modifiedTime") or "", fid))
@@ -273,9 +277,52 @@ def _iter_drive_file_ids(manifest: dict) -> Iterable[str]:
     for _, fid in items:
         yield fid
 
-def _load_one_document_by_id(loader, file_id: str) -> list:
-    """GoogleDriveReader에서 특정 파일만 로드 (리턴: Document 리스트)"""
-    return loader.load_data(file_ids=[file_id])
+# === Google Docs/Sheets/Slides Export → 텍스트/CSV =================================
+
+_GOOGLE_APPS = "application/vnd.google-apps."
+
+def _export_text_via_drive(svc, file_id: str, mime_type: str) -> tuple[str | None, str]:
+    """
+    Google Docs/Sheets/Slides를 텍스트/CSV로 export 후 문자열 반환.
+    리턴: (text_or_none, used_mime)
+    """
+    export_map = {
+        _GOOGLE_APPS + "document": "text/plain",      # Docs → txt
+        _GOOGLE_APPS + "spreadsheet": "text/csv",     # Sheets → csv
+        _GOOGLE_APPS + "presentation": "text/plain",  # Slides → txt (가능한 경우)
+    }
+    target = export_map.get(mime_type)
+    if not target:
+        return (None, "")
+
+    try:
+        req = svc.files().export_media(fileId=file_id, mimeType=target)
+        buf = io.BytesIO()
+        downloader = MediaIoBaseDownload(buf, req)
+        done = False
+        while not done:
+            _, done = downloader.next_chunk()
+        content = buf.getvalue().decode("utf-8", errors="ignore")
+        return (content, target)
+    except HttpError as e:
+        # Slides에서 text/plain 미지원일 수 있음 → 타겟을 조금 바꿔 시도 (최후 수단)
+        if mime_type.endswith("presentation"):
+            try:
+                alt = "text/csv"
+                req = svc.files().export_media(fileId=file_id, mimeType=alt)
+                buf = io.BytesIO()
+                downloader = MediaIoBaseDownload(buf, req)
+                done = False
+                while not done:
+                    _, done = downloader.next_chunk()
+                content = buf.getvalue().decode("utf-8", errors="ignore")
+                return (content, alt)
+            except Exception:
+                pass
+        # 실패하면 None 반환
+        return (None, "")
+    except Exception:
+        return (None, "")
 
 def _build_or_resume_with_progress(update_pct: Callable[[int, str | None], None],
                                    update_msg: Callable[[str], None],
@@ -286,20 +333,21 @@ def _build_or_resume_with_progress(update_pct: Callable[[int, str | None], None]
                                    max_docs: int | None = None,
                                    is_cancelled: Callable[[], bool] | None = None):
     """
-    ▶ 핵심: Resume 지원 빌드
+    ▶ Resume 지원 빌드
       - 체크포인트에 기록된 파일은 건너뛰고, 나머지 파일만 계속 인덱싱
       - 각 파일 처리 후 persist + 체크포인트 갱신
+      - Google Docs/Sheets/Slides는 export로 텍스트/CSV 추출
     """
     from llama_index.readers.google import GoogleDriveReader
-    from llama_index.core.node_parser import SentenceSplitter
 
-    # 0) 리더 초기화
+    # 0) 리더/서비스 초기화
     update_pct(10, "Drive 리더 초기화")
     try:
         try:
             loader = GoogleDriveReader(service_account_key=gcp_creds)   # 신형
         except TypeError:
             loader = GoogleDriveReader(gcp_creds_dict=gcp_creds)        # 구형
+        svc = _build_drive_service(gcp_creds)
     except Exception as e:
         st.error("Google Drive 리더 초기화 실패")
         with st.expander("자세한 오류 보기", expanded=True):
@@ -335,22 +383,38 @@ def _build_or_resume_with_progress(update_pct: Callable[[int, str | None], None]
 
     update_msg(f"체크포인트 로드: 완료 {len(done_ids)}/{total}개 — 재개 준비")
 
-    # 4) 문서별 처리 루프
     splitter = SentenceSplitter(chunk_size=1024, chunk_overlap=128)
+
+    # 4) 문서별 처리 루프
     for fid in todo_ids:
         if is_cancelled and is_cancelled():
             raise CancelledError("사용자 취소(문서 처리 중)")
 
         meta = manifest.get(fid, {})
         fname = meta.get("name", fid)
+        mime  = meta.get("mimeType", "")
         update_msg(f"문서 처리 중: {fname}")
 
-        try:
-            docs = _load_one_document_by_id(loader, fid)
-        except Exception as e:
-            st.warning(f"문서 로드 실패({fname}): {e}")
+        docs: list[Document] = []
+
+        # (A) Google Docs/Sheets/Slides → export 로 텍스트/CSV 추출
+        if mime.startswith(_GOOGLE_APPS):
+            text, used = _export_text_via_drive(svc, fid, mime)
+            if text:
+                docs = [Document(text=text, metadata={"file_name": fname, "file_id": fid, "mimeType": mime, "exported_as": used})]
+            else:
+                st.warning(f"Export 실패(건너뜀): {fname} ({mime})")
+        # (B) 그 외 바이너리/일반 파일 → LlamaIndex 리더로 시도
+        else:
+            try:
+                docs = loader.load_data(file_ids=[fid])
+            except Exception as e:
+                st.warning(f"다운로드 실패(건너뜀): {fname} — {e}")
+
+        if not docs:
             continue
 
+        # 노드화 → 인덱스 삽입 → persist → 체크포인트 갱신
         try:
             nodes = splitter.get_nodes_from_documents(docs)
             index.insert_nodes(nodes)
@@ -363,10 +427,7 @@ def _build_or_resume_with_progress(update_pct: Callable[[int, str | None], None]
 
         # 진행률(30~90 구간 매핑)
         cur_done = len(done_ids)
-        if total > 0:
-            pct = 30 + int(60 * (cur_done / total))
-        else:
-            pct = 90
+        pct = 30 + int(60 * (cur_done / total)) if total > 0 else 90
         update_pct(pct, f"진행 {cur_done}/{total} — {fname}")
 
     # 5) 완료 정리
