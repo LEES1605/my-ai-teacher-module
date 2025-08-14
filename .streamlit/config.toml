@@ -1,0 +1,7 @@
+[server]
+fileWatcherType = "none"
+enableWebsocketCompression = false
+[runner]
+runOnSave = false
+[client]
+toolbarMode = "minimal"
