@@ -548,13 +548,12 @@ def get_text_answer(query_engine, question: str, system_prompt: str) -> str:
         )
         response = query_engine.query(full_query)
         answer_text = str(response)
-        try:
-            files = [n.metadata.get("file_name", "알 수 없음")
-                     for n in getattr(response, "source_nodes", [])]
-            source_files = ", ".join(sorted(set(files))) if files else "출처 정보 없음"
-        except Exception:
-            source_files = "출처 정보 없음"
+
+        # [개선] 다양한 메타 키 + Drive 매니페스트를 활용해 파일명 복구
+        nodes = getattr(response, "source_nodes", []) or []
+        source_files = _source_names_from_nodes(nodes)
 
         return f"{answer_text}\n\n---\n*참고 자료: {source_files}*"
+
     except Exception as e:
         return f"텍스트 답변 생성 중 오류 발생: {e}"
