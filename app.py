@@ -1,4 +1,3 @@
-# app.py — 최소 동작 확인용(모듈 구조/스타일 로딩/헤더만)
 # app.py — 최소 동작 확인용(모듈 구조/스타일 로딩/헤더/Drive 테스트)
 
 import streamlit as st
