@@ -6,8 +6,7 @@ from collections.abc import Mapping
 from src.rag_engine import smoke_test_drive, preview_drive_files
 from src.ui import load_css, render_header
 from src.rag_engine import smoke_test_drive
-import pandas as pd  # ← 추가
-
+import pandas as pd  # 링크 컬럼 표시용 DataFrame
 
 st.set_page_config(
     page_title="나의 AI 영어 교사",
@@ -19,9 +18,9 @@ st.set_page_config(
 load_css()
 render_header()
 
+# (디버그) 현재 보이는 secrets 키 확인용
 with st.expander("🔐 디버그: 현재 보이는 secrets 키"):
     st.write(sorted(st.secrets.keys()))
-
 
 st.info("✅ 베이스라인 확인용 화면입니다. 이 화면이 보이면 모듈 구조가 정상입니다.")
 st.write("이제 여기서부터 RAG/Drive/관리자 기능을 단계적으로 붙여갑니다.")
@@ -30,24 +29,23 @@ st.write("이제 여기서부터 RAG/Drive/관리자 기능을 단계적으로 �
 st.markdown("## 🔗 Google Drive 연결 테스트")
 st.caption("버튼을 눌러 Drive 폴더 연결이 정상인지 확인하세요. 먼저 Secrets 설정과 폴더 공유(서비스계정 이메일 Viewer 이상)가 필요합니다.")
 
-col1, col2 = st.columns([0.65, 0.35])
+col1, col2 = st.columns([0.65, 0.35])  # 왼쪽(표) 공간을 넓게
 with col1:
     if st.button("폴더 파일 미리보기 (최신 10개)", use_container_width=True):
         ok, msg, rows = preview_drive_files(max_items=10)
         if ok:
             if rows:
                 # rows → DataFrame으로 변환하고, 열 순서/폭 최적화
-        df = pd.DataFrame(rows)
-        # 긴 MIME을 짧은 유형으로 변환
-        df["type"] = df["mime"].str.replace("application/vnd.google-apps.", "", regex=False)
-        df = df.rename(columns={"modified": "modified_at"})
-        # 열 순서를 '파일명, 열기, 유형, 수정시각'으로 (열기가 앞쪽에 보이도록)
-        df = df[["name", "link", "type", "modified_at"]]   # ← 주석 해제하여 실제 적용
+                df = pd.DataFrame(rows)
+                # 긴 MIME을 짧은 유형으로 변환
+                df["type"] = df["mime"].str.replace("application/vnd.google-apps.", "", regex=False)
+                df = df.rename(columns={"modified": "modified_at"})
+                # 열 순서를 '파일명, 열기, 유형, 수정시각'으로 (열기가 앞쪽에 보이도록)
+                df = df[["name", "link", "type", "modified_at"]]
 
-        st.dataframe(
-    df,
-    use_container_width=True,
-
+                st.dataframe(
+                    df,
+                    use_container_width=True,
                     height=360,
                     column_config={
                         "name": st.column_config.TextColumn("파일명"),
@@ -59,13 +57,13 @@ with col1:
                 )
             else:
                 st.warning("폴더에 파일이 없거나 접근할 수 없습니다.")
-
         else:
             st.error(msg)
             with st.expander("문제 해결 가이드"):
                 st.write("- `GDRIVE_FOLDER_ID` / 서비스계정 JSON(secrets) 값을 확인하세요.")
                 st.write("- Google Drive에서 **서비스계정 이메일(client_email)** 에 폴더 ‘보기 권한’을 공유하세요.")
                 st.write("- `requirements.txt`에 Drive 관련 라이브러리를 추가하고 다시 배포하세요.")
+
 with col2:
     ok, msg = smoke_test_drive()
     if ok:
@@ -73,7 +71,6 @@ with col2:
     else:
         st.warning(msg)
 # === /Google Drive 연결 테스트 ===
-
 
 # --- 여기서부터 '두뇌 준비(시뮬레이션)' 블록 추가 ---
 import time
