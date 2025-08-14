@@ -12,6 +12,9 @@ llama-index-core==0.12.52
 llama-index-llms-google-genai==0.2.4
 llama-index-embeddings-google-genai==0.2.1
 llama-index-readers-google==0.6.2
+llama-index-llms-openai
+llama-index-embeddings-openai
+openai>=1.0.0
 
 # --- Google GenAI SDK (신식; 구 'google-generativeai' 아님) ---
 google-genai
