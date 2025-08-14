@@ -214,4 +214,122 @@ def _build_index_with_progress(update_pct: Callable[[int, str | None], None],
 
     update_pct(5, "Google Drive 인증 준비")
     if not gcp_creds:
-        st.error
+        st.error("❌ 서비스계정 JSON을 읽을 수 없습니다.")
+        with st.expander("문제 해결 가이드", expanded=True):
+            st.markdown(
+                "- **.streamlit/secrets.toml**의 `GDRIVE_SERVICE_ACCOUNT_JSON`이 유효한 JSON인지 확인하세요.\n"
+                "  - 특히 `private_key`는 실제 줄바꿈이 아니라 **`\\\\n` 이스케이프**가 되어 있어야 합니다.\n"
+                "  - 예시:\n"
+                '```toml\nGDRIVE_SERVICE_ACCOUNT_JSON = """{ "type":"service_account", ..., "private_key":"-----BEGIN PRIVATE KEY-----\\n...\\n-----END PRIVATE KEY-----\\n", ... }"""\n```'
+            )
+        st.stop()
+
+    update_pct(15, "Drive 리더 초기화")
+    # 신/구 버전 모두 호환: 신형(service_account_key) → 실패 시 구형(gcp_creds_dict)
+    try:
+        loader = GoogleDriveReader(service_account_key=gcp_creds)   # ✅ 신형 API
+    except TypeError:
+        loader = GoogleDriveReader(gcp_creds_dict=gcp_creds)        # ↩️ 구형 API 호환
+
+    update_pct(30, "문서 목록 불러오는 중")
+    try:
+        documents = loader.load_data(folder_id=gdrive_folder_id)
+    except Exception as e:
+        st.error("Google Drive에서 문서를 불러오는 중 오류가 발생했습니다.")
+        with st.expander("자세한 오류 보기", expanded=True):
+            st.exception(e)
+        st.stop()
+
+    if not documents:
+        st.error("강의 자료 폴더가 비었거나 권한 문제입니다. folder_id/공유권한을 확인하세요.")
+        st.stop()
+
+    update_pct(60, f"문서 {len(documents)}개 로드 → 인덱스 생성")
+    try:
+        index = VectorStoreIndex.from_documents(documents, show_progress=True)
+    except Exception as e:
+        st.error("인덱스 생성 중 오류가 발생했습니다.")
+        with st.expander("자세한 오류 보기", expanded=True):
+            st.exception(e)
+        st.stop()
+
+    update_pct(90, "두뇌 저장 중")
+    try:
+        index.storage_context.persist(persist_dir=persist_dir)
+    except Exception as e:
+        st.error("인덱스 저장 중 오류가 발생했습니다.")
+        with st.expander("자세한 오류 보기", expanded=True):
+            st.exception(e)
+        st.stop()
+
+    update_pct(100, "완료")
+    return index
+
+def get_or_build_index(update_pct: Callable[[int, str | None], None],
+                       update_msg: Callable[[str], None],
+                       gdrive_folder_id: str,
+                       raw_sa: Any | None,
+                       persist_dir: str,
+                       manifest_path: str):
+    """Drive 변경을 감지해 저장본을 쓰거나, 변경 시에만 재인덱싱."""
+    gcp_creds = _normalize_sa(raw_sa)
+    if not gcp_creds:
+        st.error("서비스계정 JSON 파싱에 실패했습니다.")
+        with st.expander("도움말: 올바른 입력 예", expanded=True):
+            st.code(
+                'GDRIVE_SERVICE_ACCOUNT_JSON = """{ "type":"service_account", ..., '
+                '"private_key":"-----BEGIN PRIVATE KEY-----\\n...\\n-----END PRIVATE KEY-----\\n", ... }"""',
+                language="toml",
+            )
+        st.stop()
+
+    update_pct(5, "드라이브 변경 확인 중…")
+    remote = _fetch_drive_manifest(gcp_creds, gdrive_folder_id)
+    local = _load_local_manifest(manifest_path)
+
+    if os.path.exists(persist_dir) and not _manifests_differ(local, remote):
+        update_pct(25, "변경 없음 → 저장된 두뇌 로딩")
+        idx = _load_index_from_disk(persist_dir)
+        update_pct(100, "완료!")
+        return idx
+
+    if os.path.exists(persist_dir):
+        shutil.rmtree(persist_dir)
+
+    update_pct(40, "변경 감지 → 문서 로드/인덱스 생성")
+    idx = _build_index_with_progress(update_pct, update_msg, gdrive_folder_id, gcp_creds, persist_dir)
+
+    _save_local_manifest(manifest_path, remote)
+    update_pct(100, "완료!")
+    return idx
+
+
+# ============================================================================
+# 4) QA 유틸
+# ============================================================================
+
+def get_text_answer(query_engine, question: str, system_prompt: str) -> str:
+    """
+    선택된 페르소나 지침 + 사용자의 질문을 합쳐 쿼리하고, 출처 파일명을 함께 반환.
+    """
+    try:
+        full_query = (
+            f"{system_prompt}\n\n"
+            "[지시사항] 반드시 업로드된 강의 자료를 최우선으로 참고하여 답변하고, "
+            "근거를 찾을 수 없다면 그 사실을 명확히 밝혀라.\n\n"
+            f"[학생의 질문]\n{question}"
+        )
+        response = query_engine.query(full_query)
+        answer_text = str(response)
+
+        # 출처 파일명 수집
+        try:
+            files = [n.metadata.get("file_name", "알 수 없음")
+                     for n in getattr(response, "source_nodes", [])]
+            source_files = ", ".join(sorted(set(files))) if files else "출처 정보 없음"
+        except Exception:
+            source_files = "출처 정보 없음"
+
+        return f"{answer_text}\n\n---\n*참고 자료: {source_files}*"
+    except Exception as e:
+        return f"텍스트 답변 생성 중 오류 발생: {e}"
