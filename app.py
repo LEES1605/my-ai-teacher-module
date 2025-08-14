@@ -167,17 +167,18 @@ if "query_engine" not in st.session_state:
             st.error(f"LLM/임베딩 초기화 중 오류: {e}")
             st.stop()
 
-        # 인덱스 로딩/빌드
+               # 인덱스 로딩/빌드
         try:
-            # 진행률을 메시지에서 재활용하기 위해 세션에 저장
-            st.session_state["_gp_pct"] = 0
+            # session_state 대신 로컬 변수로 현재 진행률 캐싱
+            current_pct = 0
 
             def update_pct(pct: int, msg: str | None = None):
-                st.session_state["_gp_pct"] = int(pct)
-                _render_progress(bar_slot, msg_slot, pct, msg)
+                nonlocal current_pct
+                current_pct = int(pct)
+                _render_progress(bar_slot, msg_slot, current_pct, msg)
 
             def update_msg(msg: str):
-                _render_progress(bar_slot, msg_slot, int(st.session_state.get("_gp_pct", 0)), msg)
+                _render_progress(bar_slot, msg_slot, current_pct, msg)
 
             index = get_or_build_index(
                 update_pct=update_pct,
@@ -187,6 +188,7 @@ if "query_engine" not in st.session_state:
                 persist_dir=getattr(settings, "PERSIST_DIR", "/tmp/my_ai_teacher/storage_gdrive"),
                 manifest_path=getattr(settings, "MANIFEST_PATH", "/tmp/my_ai_teacher/drive_manifest.json"),
             )
+
         except Exception as e:
             _render_progress(bar_slot, msg_slot, 100, "인덱스 준비 실패")
             st.error(f"인덱스 준비 중 오류: {e}")
