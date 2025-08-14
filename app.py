@@ -110,6 +110,20 @@ except Exception:
         st.code(traceback.format_exc())
     st.stop()
 
+# ==== (선택) 인덱싱 보고서 표시 ====
+rep = st.session_state.get("indexing_report")
+if rep:
+    with st.expander("🧾 인덱싱 보고서(스킵된 파일 보기)", expanded=False):
+        st.write(f"총 파일(매니페스트): {rep.get('total_manifest')}, "
+                 f"로딩된 문서 수: {rep.get('loaded_docs')}, "
+                 f"스킵: {rep.get('skipped_count')}")
+        skipped = rep.get("skipped", [])
+        if skipped:
+            import pandas as _pd
+            st.dataframe(_pd.DataFrame(skipped), use_container_width=True, hide_index=True)
+        else:
+            st.caption("스킵된 파일이 없습니다 🎉")
+
 # ▶ 대화 로그 저장 모듈(JSONL)
 from src import chat_store
 
