@@ -70,7 +70,8 @@ class _Settings:
     OPENAI_LLM_MODEL: str | None
     OPENAI_EMBED_MODEL: str | None
 
-    # --- 경로 ---
+    # --- 경로 (settings에서도 접근 가능하도록) ---
+    APP_DATA_DIR: str = str(APP_DATA_DIR)  # ← 추가: 클래스 레벨(디폴트)
     PERSIST_DIR: str = PERSIST_DIR
     MANIFEST_PATH: str = MANIFEST_PATH
 
@@ -94,6 +95,11 @@ class _Settings:
         self.OPENAI_API_KEY = SecretStr(oai_key) if oai_key else None
         self.OPENAI_LLM_MODEL = str(_get("OPENAI_LLM_MODEL", "gpt-4o-mini")).strip()
         self.OPENAI_EMBED_MODEL = str(_get("OPENAI_EMBED_MODEL", "text-embedding-3-small")).strip()
+
+        # 경로 값을 인스턴스 속성으로도 보장 (다른 모듈에서 settings.APP_DATA_DIR 사용 가능)
+        self.APP_DATA_DIR = str(APP_DATA_DIR)
+        self.PERSIST_DIR = str(PERSIST_DIR)
+        self.MANIFEST_PATH = str(MANIFEST_PATH)
 
 # 외부에서 import할 settings 싱글턴
 settings = _Settings()
