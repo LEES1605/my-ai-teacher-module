@@ -2,7 +2,7 @@
 
 import streamlit as st
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping  # (현재는 미사용이지만 향후 확장 대비)
 import pandas as pd  # 링크 컬럼 표시용 DataFrame
 import time
 
@@ -169,11 +169,15 @@ if "query_engine" not in st.session_state:
 
         # 인덱스 로딩/빌드
         try:
+            # 진행률을 메시지에서 재활용하기 위해 세션에 저장
+            st.session_state["_gp_pct"] = 0
+
             def update_pct(pct: int, msg: str | None = None):
+                st.session_state["_gp_pct"] = int(pct)
                 _render_progress(bar_slot, msg_slot, pct, msg)
 
             def update_msg(msg: str):
-                _render_progress(bar_slot, msg_slot, int(st.session_state.get('_gp_pct', 0)), msg)
+                _render_progress(bar_slot, msg_slot, int(st.session_state.get("_gp_pct", 0)), msg)
 
             index = get_or_build_index(
                 update_pct=update_pct,
