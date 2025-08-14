@@ -3,10 +3,26 @@
 # ===== Imports (os를 먼저 가져와야 os.environ 사용 가능) =====
 import os
 import time
-import uuid                     # ← 추가: uuid 사용
+import uuid
 import streamlit as st
 
-ss = st.session_state           # ← 추가: 세션 상태 별칭
+# ✅ Drive 로그 유틸
+from src.drive_log import save_chatlog_markdown
+
+ss = st.session_state
+
+# --- 대화/자동저장 기본 키 ---
+ss.setdefault("session_id", uuid.uuid4().hex[:12])
+ss.setdefault("chat_history", [])          # [{"role":"user","content":...}, ...]
+ss.setdefault("auto_save_chatlog", True)   # 기본 ON
+
+# (선택) 사이드바 토글
+with st.sidebar:
+    ss.auto_save_chatlog = st.toggle("대화 자동 저장(Drive)", value=ss.auto_save_chatlog)
+
+# ===== 환경 변수 설정: 런타임 안정화 =====
+os.environ["STREAMLIT_SERVER_FILE_WATCHER_TYPE"] = "none"
+
 
 # ===== 환경 변수 설정: 런타임 안정화 =====
 os.environ["STREAMLIT_SERVER_FILE_WATCHER_TYPE"] = "none"
