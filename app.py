@@ -228,8 +228,9 @@ def run_prepare_both():
         g_llm = make_llm("google", settings.GEMINI_API_KEY.get_secret_value(),
                          getattr(settings, "LLM_MODEL", "gemini-1.5-pro"),
                          float(ss.get("temperature", 0.0)))
+        ss["llm_google"] = g_llm   # ← 추가: LLM 보관
         ss["qe_google"] = index.as_query_engine(
-            llm=g_llm,
+            llm=g_llm,          
             response_mode=ss.get("response_mode", getattr(settings, "RESPONSE_MODE", "compact")),
             similarity_top_k=int(ss.get("similarity_top_k", getattr(settings, "SIMILARITY_TOP_K", 5))),
         )
@@ -243,6 +244,7 @@ def run_prepare_both():
             o_llm = make_llm("openai", settings.OPENAI_API_KEY.get_secret_value(),
                              getattr(settings, "OPENAI_LLM_MODEL", "gpt-4o-mini"),
                              float(ss.get("temperature", 0.0)))
+            ss["llm_openai"] = o_llm   # ← 추가: LLM 보관
             ss["qe_openai"] = index.as_query_engine(
                 llm=o_llm,
                 response_mode=ss.get("response_mode", getattr(settings, "RESPONSE_MODE", "compact")),
@@ -337,12 +339,29 @@ if user_input:
 
     # 2) ChatGPT 보완/검증 (있을 때)
     if ready_openai:
+        from src.rag_engine import llm_complete
+
         review_directive = (
-            "당신은 동료 AI 교사입니다. 아래 [학생 질문]과 [동료의 1차 답변]을 읽고 "
-            "부족한 부분을 보완/교정하고 예시를 추가한 뒤, 마지막에 '최종 정리'를 제시하세요. "
-            "가능하면 근거(자료 파일명)를 유지하거나 보강하세요."
+            "역할: 당신은 동료 AI 영어교사입니다.\n"
+            "목표: [학생 질문]과 [동료의 1차 답변]을 읽고, 사실오류/빠진점/모호함을 교정·보완합니다.\n"
+            "지침:\n"
+            "1) 핵심만 간결히 재정리\n"
+            "2) 틀린 부분은 근거와 함께 바로잡기\n"
+            "3) 이해를 돕는 예문 2~3개 추가 (가능하면 학습자의 모국어 대비 포인트)\n"
+            "4) 마지막에 <최종 정리> 섹션으로 한눈 요약\n"
+            "금지: 새로운 외부 검색/RAG. 제공된 내용과 교사 지식만 사용.\n"
         )
-        augmented = f"[학생 질문]\n{user_input}\n\n[동료의 1차 답변(Gemini)]\n{_strip_sources(ans_g)}"
+        augmented = (
+            f"[학생 질문]\n{user_input}\n\n"
+            f"[동료의 1차 답변(Gemini)]\n{_strip_sources(ans_g)}\n\n"
+            f"[당신의 작업]\n위 기준으로만 보완/검증하라."
+        )
+        with st.spinner("🤝 ChatGPT 선생님이 보완/검증 중…"):
+            # ✅ RAG 없이 순수 LLM으로만 실행
+            ans_o = llm_complete(ss.get("llm_openai"), _persona() + "\n\n" + review_directive + "\n\n" + augmented)
+
+        content_o = f"**🤖 ChatGPT**\n\n{ans_o}"
+
         with st.spinner("🤝 ChatGPT 선생님이 보완/검증 중…"):
             ans_o = get_text_answer(ss["qe_openai"], augmented, _persona() + "\n" + review_directive)
         content_o = f"**🤖 ChatGPT**\n\n{ans_o}"
