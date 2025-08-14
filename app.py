@@ -30,26 +30,36 @@ st.write("이제 여기서부터 RAG/Drive/관리자 기능을 단계적으로 �
 st.markdown("## 🔗 Google Drive 연결 테스트")
 st.caption("버튼을 눌러 Drive 폴더 연결이 정상인지 확인하세요. 먼저 Secrets 설정과 폴더 공유(서비스계정 이메일 Viewer 이상)가 필요합니다.")
 
-col1, col2 = st.columns([0.35, 0.65])
+col1, col2 = st.columns([0.65, 0.35])
 with col1:
     if st.button("폴더 파일 미리보기 (최신 10개)", use_container_width=True):
         ok, msg, rows = preview_drive_files(max_items=10)
         if ok:
             if rows:
-                # ← 교체된 부분 시작
-                df = pd.DataFrame(rows)[["name", "mime", "modified", "link"]]
-                st.dataframe(
-                    df,
-                    use_container_width=True,
+                # rows → DataFrame으로 변환하고, 열 순서/폭 최적화
+        df = pd.DataFrame(rows)
+        # 긴 MIME을 짧은 유형으로 변환
+        df["type"] = df["mime"].str.replace("application/vnd.google-apps.", "", regex=False)
+        df = df.rename(columns={"modified": "modified_at"})
+        # 열 순서를 '파일명, 열기, 유형, 수정시각'으로 (열기가 앞쪽에 보이도록)
+        df = df[["name", "link", "type", "modified_at"]]   # ← 주석 해제하여 실제 적용
+
+        st.dataframe(
+    df,
+    use_container_width=True,
+
                     height=360,
                     column_config={
-                        "link": st.column_config.LinkColumn("open", display_text="열기")
+                        "name": st.column_config.TextColumn("파일명"),
+                        "link": st.column_config.LinkColumn("open", display_text="열기"),
+                        "type": st.column_config.TextColumn("유형"),
+                        "modified_at": st.column_config.TextColumn("수정시각"),
                     },
                     hide_index=True,
                 )
-                # ← 교체된 부분 끝
             else:
                 st.warning("폴더에 파일이 없거나 접근할 수 없습니다.")
+
         else:
             st.error(msg)
             with st.expander("문제 해결 가이드"):
