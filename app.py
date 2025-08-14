@@ -4,6 +4,8 @@
 import os
 import time
 import uuid
+import re                 # ← 추가: _strip_sources에서 사용
+import pandas as pd       # ← 추가: 미리보기 표에서 사용
 import streamlit as st
 
 # ✅ Drive 로그 유틸
@@ -19,13 +21,6 @@ ss.setdefault("auto_save_chatlog", True)   # 기본 ON
 # (선택) 사이드바 토글
 with st.sidebar:
     ss.auto_save_chatlog = st.toggle("대화 자동 저장(Drive)", value=ss.auto_save_chatlog)
-
-# ===== 환경 변수 설정: 런타임 안정화 =====
-os.environ["STREAMLIT_SERVER_FILE_WATCHER_TYPE"] = "none"
-
-
-# ===== 환경 변수 설정: 런타임 안정화 =====
-os.environ["STREAMLIT_SERVER_FILE_WATCHER_TYPE"] = "none"
 
 # ===== 환경 변수 설정: 런타임 안정화 =====
 os.environ["STREAMLIT_SERVER_FILE_WATCHER_TYPE"] = "none"
@@ -360,5 +355,14 @@ if user_input:
     else:
         with st.chat_message("assistant"):
             st.info("ChatGPT 키가 없어 Gemini만 응답했습니다. OPENAI_API_KEY를 추가하면 보완/검증이 활성화됩니다.")
+
+    # ✅ Drive Markdown 대화 로그 자동 저장 (chat_log/ 폴더)
+    if ss.auto_save_chatlog and ss.messages:
+        try:
+            save_chatlog_markdown(ss.session_id, ss.messages)
+            # (선택) 사용자에게 짧게 알림
+            st.toast("Drive에 대화 저장 완료 (chat_log/)", icon="💾")
+        except Exception as e:
+            st.caption(f"⚠️ Drive 저장 실패: {e}")
 
     st.rerun()
