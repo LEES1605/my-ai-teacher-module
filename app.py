@@ -6,7 +6,7 @@ import os
 import time
 import uuid
 import re
-import json          # ← 추가
+import json          # ← JSONL/Markdown 저장 시 SA 문자열 → dict 변환
 import pandas as pd
 import streamlit as st
 
@@ -388,7 +388,7 @@ def _build_context_for_models(messages: list[dict], limit_pairs: int = 2, max_ch
     for m in reversed(messages):
         role, content = m.get("role"), str(m.get("content", "")).strip()
         if role == "assistant":
-            # 헤더(**🤖 Gemini**) 제거
+            # 헤더(**🤖 Gemini**/**🤖 ChatGPT**) 제거
             content = re.sub(r"^\*\*🤖 .*?\*\*\s*\n+", "", content).strip()
             if buf_user is not None:
                 pairs.append((buf_user, content))
@@ -441,7 +441,6 @@ def _log_try(items):
         st.toast("대화 로그 저장 완료", icon="💾")
     except Exception as e:
         st.caption(f"⚠️ 대화 로그 저장 실패: {e}")
-
 
 # ===== 입력창 & 처리 =====
 user_input = st.chat_input("질문을 입력하거나, 분석/요약할 문장이나 글을 붙여넣으세요.")
@@ -503,28 +502,37 @@ if user_input:
         ss.messages.append({"role": "assistant", "content": content_o})
         with st.chat_message("assistant"):
             st.markdown(content_o)
+
+        # JSONL 로그: ChatGPT  ← ← ← (추가!)
+        _log_try([chat_store.make_entry(
+            ss.session_id, "assistant", "ChatGPT", content_o, mode,
+            model=getattr(settings, "OPENAI_LLM_MODEL", "gpt-4o-mini")
+        )])
     else:
         with st.chat_message("assistant"):
             st.info("ChatGPT 키가 없어 Gemini만 응답했습니다. OPENAI_API_KEY를 추가하면 보완/검증이 활성화됩니다.")
 
-# ✅ Drive Markdown 대화 로그 자동 저장 (공유드라이브의 데이터 폴더 내 chat_log/)
-if ss.auto_save_chatlog and ss.messages:
-    try:
-        parent_id = (getattr(settings, "CHATLOG_FOLDER_ID", None) or settings.GDRIVE_FOLDER_ID)
-        sa = settings.GDRIVE_SERVICE_ACCOUNT_JSON
-        if isinstance(sa, str):
-            try:
-                sa = json.loads(sa)
-            except Exception:
-                pass
+    # ✅ Drive Markdown 대화 로그 자동 저장 (공유드라이브의 데이터 폴더 내 chat_log/)
+    #    ※ 반드시 if user_input: 블록 안에서 실행해야 무한 rerun 방지
+    if ss.auto_save_chatlog and ss.messages:
+        try:
+            parent_id = (getattr(settings, "CHATLOG_FOLDER_ID", None) or settings.GDRIVE_FOLDER_ID)
+            sa = settings.GDRIVE_SERVICE_ACCOUNT_JSON
+            if isinstance(sa, str):
+                try:
+                    sa = json.loads(sa)
+                except Exception:
+                    pass
 
-        save_chatlog_markdown(
-            ss.session_id,
-            ss.messages,
-            parent_folder_id=parent_id,
-            sa_json=sa,   # ← 반드시 추가
-        )
-        st.toast("Drive에 대화 저장 완료 (chat_log/)", icon="💾")
-    except Exception as e:
-        st.caption(f"⚠️ Drive 저장 실패: {e}")
+            save_chatlog_markdown(
+                ss.session_id,
+                ss.messages,
+                parent_folder_id=parent_id,
+                sa_json=sa,
+            )
+            st.toast("Drive에 대화 저장 완료 (chat_log/)", icon="💾")
+        except Exception as e:
+            st.caption(f"⚠️ Drive 저장 실패: {e}")
+
+    # 한 턴 마무리 후 UI 갱신
     st.rerun()
