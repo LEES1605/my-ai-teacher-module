@@ -52,19 +52,18 @@ def preview_drive_files(max_items=10):
         creds = _load_creds()
         service = build("drive", "v3", credentials=creds)
 
-        if "GDRIVE_FOLDER_ID" not in st.secrets or not str(st.secrets["GDRIVE_FOLDER_ID"]).strip():
-            return False, "Secrets에 GDRIVE_FOLDER_ID가 없습니다.", []
+        @st.cache_data(ttl=60)
+        def _list_files_cached(fid, max_items, _cache_key):
+            # _cache_key: 서비스계정 JSON(문자열)의 존재 자체를 캐시 키에 반영하기 위함
+            return service.files().list(
+                q=f"'{fid}' in parents and trashed=false",
+                fields="files(id,name,mimeType,modifiedTime,webViewLink)",
+                pageSize=max_items,
+                supportsAllDrives=True,
+                includeItemsFromAllDrives=True,
+                corpora="allDrives",
+            ).execute().get("files", [])
 
-        folder_id = st.secrets["GDRIVE_FOLDER_ID"]
-
-        res = service.files().list(
-            q=f"'{folder_id}' in parents and trashed=false",
-            fields="files(id,name,mimeType,modifiedTime,webViewLink)",
-            pageSize=max_items,
-            supportsAllDrives=True,
-            includeItemsFromAllDrives=True,
-            corpora="allDrives",
-        ).execute()
 
         files = res.get("files", [])
         rows = [
