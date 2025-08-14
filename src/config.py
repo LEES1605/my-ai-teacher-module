@@ -115,7 +115,10 @@ class _Settings:
         self.GDRIVE_FOLDER_ID = str(_get_first(
             ["GDRIVE_FOLDER_ID", "GOOGLE_DRIVE_FOLDER_ID"], ""
         )).strip()
-
+        
+        # (선택) 채팅 로그를 따로 둘 폴더 (공유드라이브 내부)
+        self.CHATLOG_FOLDER_ID = str(_get("CHATLOG_FOLDER_ID", "")).strip()
+        
         # 서비스계정 JSON: 다양한 키 이름을 지원(호환성)
         self.GDRIVE_SERVICE_ACCOUNT_JSON = _get_jsonish_first([
             "GOOGLE_SERVICE_ACCOUNT_JSON",
