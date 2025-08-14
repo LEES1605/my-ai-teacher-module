@@ -3,7 +3,13 @@
 # ===== Imports (os를 먼저 가져와야 os.environ 사용 가능) =====
 import os
 import time
+import uuid                     # ← 추가: uuid 사용
 import streamlit as st
+
+ss = st.session_state           # ← 추가: 세션 상태 별칭
+
+# ===== 환경 변수 설정: 런타임 안정화 =====
+os.environ["STREAMLIT_SERVER_FILE_WATCHER_TYPE"] = "none"
 
 # ===== 환경 변수 설정: 런타임 안정화 =====
 os.environ["STREAMLIT_SERVER_FILE_WATCHER_TYPE"] = "none"
