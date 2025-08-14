@@ -113,7 +113,6 @@ def init_llama_settings(api_key: str, llm_model: str, embed_model: str, temperat
 # --------------------------------------------------------------------
 # 3) 인덱스 로딩/빌드 & 변경 감지(매니페스트)
 # --------------------------------------------------------------------
-@st.cache_resource(show_spinner=False)
 def _load_index_from_disk(persist_dir: str):
     from llama_index.core import StorageContext, load_index_from_storage
     storage_context = StorageContext.from_defaults(persist_dir=persist_dir)
