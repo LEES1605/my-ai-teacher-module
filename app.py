@@ -357,12 +357,15 @@ if user_input:
             st.info("ChatGPT 키가 없어 Gemini만 응답했습니다. OPENAI_API_KEY를 추가하면 보완/검증이 활성화됩니다.")
 
     # ✅ Drive Markdown 대화 로그 자동 저장 (chat_log/ 폴더)
-    if ss.auto_save_chatlog and ss.messages:
+       if ss.auto_save_chatlog and ss.messages:
         try:
-            save_chatlog_markdown(ss.session_id, ss.messages)
-            # (선택) 사용자에게 짧게 알림
+            # 공유드라이브 내 원하는 폴더를 우선 사용(없으면 GDRIVE_FOLDER_ID)
+            save_chatlog_markdown(
+                ss.session_id,
+                ss.messages,
+                parent_folder_id=(getattr(settings, "CHATLOG_FOLDER_ID", None) or settings.GDRIVE_FOLDER_ID),
+            )
             st.toast("Drive에 대화 저장 완료 (chat_log/)", icon="💾")
         except Exception as e:
             st.caption(f"⚠️ Drive 저장 실패: {e}")
-
     st.rerun()
