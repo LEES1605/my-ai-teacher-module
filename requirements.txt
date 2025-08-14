@@ -3,24 +3,23 @@ streamlit>=1.48
 pandas
 
 # --- Google Drive API ---
-google-api-python-client
-google-auth
-google-auth-httplib2
+google-api-python-client>=2.137.0
+google-auth>=2.30.0
+google-auth-httplib2>=0.2.0
 
-# --- LlamaIndex (신 SDK 경로: google-genai) ---
+# --- Google GenAI (새 SDK) ---
+google-genai>=1.0.0,<2
+
+# --- LlamaIndex core & Google GenAI adapters ---
 llama-index-core==0.12.52
 llama-index-llms-google-genai==0.2.4
 llama-index-embeddings-google-genai==0.2.1
 llama-index-readers-google==0.6.2
-llama-index-llms-openai
-llama-index-embeddings-openai
-openai>=1.0.0
+
+# --- OpenAI adapters (ChatGPT 보완/검증 용) ---
 openai>=1.43.0
 llama-index-llms-openai>=0.4.0
 llama-index-embeddings-openai>=0.3.0
 
-# --- Google GenAI SDK (신식; 구 'google-generativeai' 아님) ---
-google-genai
-
-# --- 호환 이슈 예방 ---
+# --- 호환/런타임 ---
 protobuf<5
