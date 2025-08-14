@@ -154,12 +154,17 @@ def _build_index_with_progress(update_pct: Callable[[int, str | None], None],
             )
         st.stop()
 
-    update_pct(15, "Drive 리더 초기화")
-    loader = GoogleDriveReader(gcp_creds_dict=gcp_creds)
+        update_pct(15, "Drive 리더 초기화")
+    # 버전 호환: 신형은 service_account_key, 구형은 gcp_creds_dict
+    try:
+        loader = GoogleDriveReader(service_account_key=gcp_creds)   # ✅ 신형 API
+    except TypeError:
+        loader = GoogleDriveReader(gcp_creds_dict=gcp_creds)        # ↩️ 구형 API 호환
 
     update_pct(30, "문서 목록 불러오는 중")
     try:
         documents = loader.load_data(folder_id=gdrive_folder_id)
+
     except Exception as e:
         st.error("Google Drive에서 문서를 불러오는 중 오류가 발생했습니다.")
         with st.expander("자세한 오류 보기", expanded=True):
