@@ -557,3 +557,17 @@ def get_text_answer(query_engine, question: str, system_prompt: str) -> str:
 
     except Exception as e:
         return f"텍스트 답변 생성 중 오류 발생: {e}"
+
+# === LLM 무검색(직접 완성) 유틸 ======================================
+def llm_complete(llm, prompt: str, temperature: float = 0.0) -> str:
+    """
+    RAG 검색 없이 순수 LLM으로만 결과를 생성.
+    llama-index LLM 래퍼 호환 (complete().text 또는 predict())
+    """
+    try:
+        resp = llm.complete(prompt)
+        # CompletionResponse(text=...) 형태
+        return getattr(resp, "text", str(resp))
+    except AttributeError:
+        # 일부 구현체는 predict만 제공할 수 있음
+        return llm.predict(prompt)
