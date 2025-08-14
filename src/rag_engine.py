@@ -15,6 +15,8 @@ def _load_creds():
         "GOOGLE_SERVICE_ACCOUNT_JSON",
         "google_service_account_json",
         "SERVICE_ACCOUNT_JSON",
+        # 과거 키 이름을 썼을 가능성까지 케어하려면 아래 줄의 주석을 해제하세요.
+        # "GDRIVE_SERVICE_ACCOUNT_JSON",
     ]
     raw = None
     for k in candidates:
@@ -52,17 +54,6 @@ def preview_drive_files(max_items=10):
     try:
         creds = _load_creds()
         service = build("drive", "v3", credentials=creds)
-        # ✅ 60초 캐시: 목록 가져오기 (preview_drive_files 내부, service 생성 "바로 아래"에 추가)
-        @st.cache_data(ttl=60)
-        def _list_files_cached(fid: str, max_items: int, cache_key: str):
-            return service.files().list(
-                q=f"'{fid}' in parents and trashed=false",
-                fields="files(id,name,mimeType,modifiedTime,webViewLink)",
-                pageSize=max_items,
-                supportsAllDrives=True,
-                includeItemsFromAllDrives=True,
-                corpora="allDrives",
-            ).execute().get("files", [])
 
         # 필수 시크릿 확인
         if "GDRIVE_FOLDER_ID" not in st.secrets or not str(st.secrets["GDRIVE_FOLDER_ID"]).strip():
@@ -70,9 +61,9 @@ def preview_drive_files(max_items=10):
 
         folder_id = st.secrets["GDRIVE_FOLDER_ID"]
 
-        # 60초 캐시: 폴더 목록 가져오기
+        # ✅ 60초 캐시: 목록 가져오기 (service 생성 직후에 정의)
         @st.cache_data(ttl=60)
-        def _list_files_cached(fid: str, max_items: int, cache_key: str):
+        def _list_files_cached(fid: str, max_items: int, _cache_key):
             return service.files().list(
                 q=f"'{fid}' in parents and trashed=false",
                 fields="files(id,name,mimeType,modifiedTime,webViewLink)",
@@ -82,7 +73,7 @@ def preview_drive_files(max_items=10):
                 corpora="allDrives",
             ).execute().get("files", [])
 
-        # 캐시된 호출 사용 (서비스계정 JSON 문자열을 캐시 키에 섞어서 변경 시 캐시 무효화)
+        # ✅ 캐시된 호출 사용 (서비스계정 JSON 문자열을 캐시 키에 섞어 변경 시 캐시 무효화)
         files = _list_files_cached(
             folder_id,
             max_items,
@@ -104,19 +95,4 @@ def preview_drive_files(max_items=10):
             msg = (
                 "폴더에 파일이 없거나 접근 권한이 없습니다. "
                 "→ 1) 폴더에 테스트 파일을 하나 넣어보고\n"
-                "→ 2) 해당 폴더를 서비스계정(email 스모크 테스트에 표시)에 '보기(Reader)'로 공유하세요.\n"
-                "공유 드라이브라면 드라이브 멤버로 서비스계정을 추가하는 것도 권장합니다."
-            )
-            return True, msg, []
-
-        return True, "OK", rows
-
-    except Exception as e:
-        text = str(e)
-        if "File not found" in text or "notFound" in text:
-            hint = "폴더 ID가 틀렸습니다. Drive 주소의 .../folders/ 뒤 문자열만 넣으세요."
-        elif "insufficient" in text or "permissions" in text:
-            hint = "권한 부족입니다. 폴더를 서비스계정 이메일에 '보기'로 공유하세요."
-        else:
-            hint = "알 수 없는 오류. 메시지를 복사해 알려주세요."
-        return False, f"Drive API 오류: {e}\n힌트: {hint}", []
+                "→ 2) 해당 폴더를 서비
