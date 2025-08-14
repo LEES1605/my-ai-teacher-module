@@ -13,11 +13,8 @@ llama-index-llms-gemini
 llama-index-embeddings-google
 llama-index-readers-google
 
-# (구버전 호환이 필요할 때만 다음 한 줄도 추가해도 됨)
-# llama-index-llms-google-genai
+# --- Google GenAI SDK (버전 중요) ---
+google-generativeai>=0.8.4
 
-# --- Google GenAI SDK ---
-google-generativeai
-
-# --- 호환 ---
+# --- 호환 문제 방지 ---
 protobuf<5
