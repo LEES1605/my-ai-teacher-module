@@ -1,30 +1,48 @@
 # src/rag_engine.py
 from __future__ import annotations
-from typing import List, Dict, Any
-from google.oauth2 import service_account
-from googleapiclient.discovery import build
+import json
+import streamlit as st
 
-DRIVE_SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
+DRIVE_READONLY_SCOPE = "https://www.googleapis.com/auth/drive.readonly"
 
-def _build_drive_service(creds_dict: Dict[str, Any]):
-    """Service Account dict → Drive v3 service"""
-    creds = service_account.Credentials.from_service_account_info(
-        creds_dict, scopes=DRIVE_SCOPES
-    )
-    return build("drive", "v3", credentials=creds, cache_discovery=False)
+def _coerce_service_account(raw_sa):
+    """st.secrets 에서 온 SA를 dict로 정규화."""
+    if raw_sa is None:
+        return None
+    if isinstance(raw_sa, dict):
+        return dict(raw_sa)
+    if hasattr(raw_sa, "items"):
+        return dict(raw_sa)
+    if isinstance(raw_sa, str) and raw_sa.strip():
+        return json.loads(raw_sa)
+    return None
 
-def smoke_test_drive(creds_dict: Dict[str, Any], folder_id: str, limit: int = 10) -> List[Dict[str, str]]:
+def smoke_test_drive():
     """
-    최소 연결 테스트: 폴더 안 파일 일부를 나열.
-    반환: [{id, name, mimeType, modifiedTime}] 리스트
+    베이스라인 점검:
+    - 필수 secrets 존재 여부
+    - 서비스계정 JSON 파싱
+    - (가능하면) google-auth 로 Credentials 생성
     """
-    svc = _build_drive_service(creds_dict)
-    resp = svc.files().list(
-        q=f"'{folder_id}' in parents and trashed=false",
-        fields="files(id,name,mimeType,modifiedTime)",
-        pageSize=limit,
-        supportsAllDrives=True,
-        includeItemsFromAllDrives=True,
-        orderBy="modifiedTime desc"
-    ).execute()
-    return resp.get("files", [])
+    s = st.secrets
+    folder_id = s.get("GDRIVE_FOLDER_ID", "")
+    raw_sa = s.get("GDRIVE_SERVICE_ACCOUNT_JSON", None)
+
+    if not folder_id:
+        return False, "❌ GDRIVE_FOLDER_ID 가 비어 있습니다."
+
+    sa_dict = _coerce_service_account(raw_sa)
+    if not sa_dict:
+        return False, "❌ GDRIVE_SERVICE_ACCOUNT_JSON 이 비어있거나 JSON 파싱 실패."
+
+    # 여기서만 google-auth 임포트 → 미설치여도 앱 전체가 죽지 않음
+    try:
+        from google.oauth2 import service_account  # lazy import
+        _ = service_account.Credentials.from_service_account_info(
+            sa_dict, scopes=[DRIVE_READONLY_SCOPE]
+        )
+        return True, "✅ 서비스 계정 키 형식 OK (google-auth 로 자격증명 생성 성공)"
+    except ModuleNotFoundError:
+        return False, "⚠️ google-auth 미설치: requirements.txt 에 google-auth==2.40.3 추가 필요"
+    except Exception as e:
+        return False, f"❌ 자격증명 생성 실패: {e}"
