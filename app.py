@@ -1,20 +1,20 @@
-# app.py — 최소 동작 확인용(모듈 구조/스타일 로딩/헤더/Drive 테스트)
+# app.py — 최소 동작 + Drive 테스트 + (실전) 두뇌 준비 + 챗 UI
 
 import streamlit as st
 import json
 from collections.abc import Mapping
-from src.rag_engine import smoke_test_drive, preview_drive_files
-from src.ui import load_css, render_header
-from src.rag_engine import smoke_test_drive
 import pandas as pd  # 링크 컬럼 표시용 DataFrame
+import time
 
+# ===== 페이지 설정(항상 최상단) ================================================
 st.set_page_config(
     page_title="나의 AI 영어 교사",
     layout="wide",
     initial_sidebar_state="collapsed"
 )
 
-# 전역 스타일 로드 + 헤더 렌더링
+# ===== 기본 UI/스타일 =========================================================
+from src.ui import load_css, render_header  # 기존 프로젝트 함수 그대로 사용
 load_css()
 render_header()
 
@@ -25,7 +25,9 @@ render_header()
 st.info("✅ 베이스라인 확인용 화면입니다. 이 화면이 보이면 모듈 구조가 정상입니다.")
 st.write("이제 여기서부터 RAG/Drive/관리자 기능을 단계적으로 붙여갑니다.")
 
-# === 🔗 Google Drive 연결 테스트 (베이스라인 알림 '바로 아래') ===
+# ===== Google Drive 연결 테스트 ===============================================
+from src.rag_engine import smoke_test_drive, preview_drive_files
+
 st.markdown("## 🔗 Google Drive 연결 테스트")
 st.caption("버튼을 눌러 Drive 폴더 연결이 정상인지 확인하세요. 먼저 Secrets 설정과 폴더 공유(서비스계정 이메일 Viewer 이상)가 필요합니다.")
 
@@ -72,9 +74,7 @@ with col2:
         st.warning(msg)
 # === /Google Drive 연결 테스트 ===
 
-# --- 여기서부터 '두뇌 준비(시뮬레이션)' 블록 추가 ---
-import time
-
+# ===== 두뇌 준비 (시뮬레이션) ==================================================
 st.markdown("----")
 st.subheader("🧠 두뇌 준비 (시뮬레이션)")
 
@@ -123,4 +123,128 @@ if start_sim:
     time.sleep(0.4)
     bar_slot.empty(); msg_slot.empty()
     st.success("시뮬레이션 완료 — UI/진행 흐름 정상입니다.")
-# --- '두뇌 준비(시뮬레이션)' 블록 끝 ---
+
+# ===== 두뇌 준비 (실전) + 챗 UI ===============================================
+st.markdown("----")
+st.subheader("🧠 두뇌 준비 (실전) & 대화")
+
+# 필요한 엔진/설정 유틸들
+from src.config import settings, PERSIST_DIR, MANIFEST_PATH
+from src.rag_engine import init_llama_settings, get_or_build_index, get_text_answer
+from src.prompts import EXPLAINER_PROMPT, ANALYST_PROMPT, READER_PROMPT
+
+# 진행 표시용 공통 함수(시뮬레이션과 동일 UI)
+def _render_progress(slot_bar, slot_msg, pct: int, msg: str | None = None):
+    p = max(0, min(100, int(pct)))
+    slot_bar.markdown(f"""
+<div class="gp-wrap">
+  <div class="gp-fill" style="width:{p}%"></div>
+  <div class="gp-label">{p}%</div>
+</div>
+""", unsafe_allow_html=True)
+    if msg is not None:
+        slot_msg.markdown(f"<div class='gp-msg'>{msg}</div>", unsafe_allow_html=True)
+
+# 1) 아직 query_engine이 없으면 준비 버튼 노출
+if "query_engine" not in st.session_state:
+    st.info("AI 교사를 시작하려면 아래 버튼을 눌러주세요. 처음에는 학습량에 따라 시간이 소요될 수 있습니다.")
+
+    if st.button("🧠 AI 두뇌 준비 시작하기", key="start_brain_real"):
+        bar_slot = st.empty()
+        msg_slot = st.empty()
+        _render_progress(bar_slot, msg_slot, 0, "두뇌 준비를 시작합니다…")
+
+        # LLM/임베딩 설정 (키 점검 포함)
+        try:
+            init_llama_settings(
+                api_key=settings.GEMINI_API_KEY.get_secret_value(),
+                llm_model=settings.LLM_MODEL,
+                embed_model=settings.EMBED_MODEL,
+                temperature=float(st.session_state.get("temperature", 0.0)),
+            )
+        except Exception as e:
+            _render_progress(bar_slot, msg_slot, 100, "LLM/임베딩 설정 오류")
+            st.error(f"LLM/임베딩 초기화 중 오류: {e}")
+            st.stop()
+
+        # 인덱스 로딩/빌드
+        try:
+            def update_pct(pct: int, msg: str | None = None):
+                _render_progress(bar_slot, msg_slot, pct, msg)
+
+            def update_msg(msg: str):
+                _render_progress(bar_slot, msg_slot, int(st.session_state.get('_gp_pct', 0)), msg)
+
+            index = get_or_build_index(
+                update_pct=update_pct,
+                update_msg=update_msg,
+                gdrive_folder_id=settings.GDRIVE_FOLDER_ID,
+                raw_sa=settings.GDRIVE_SERVICE_ACCOUNT_JSON,
+                persist_dir=PERSIST_DIR,
+                manifest_path=MANIFEST_PATH,
+            )
+        except Exception as e:
+            _render_progress(bar_slot, msg_slot, 100, "인덱스 준비 실패")
+            st.error(f"인덱스 준비 중 오류: {e}")
+            st.stop()
+
+        # 질의 엔진 준비
+        st.session_state.query_engine = index.as_query_engine(
+            response_mode=st.session_state.get("response_mode", settings.RESPONSE_MODE),
+            similarity_top_k=int(st.session_state.get("similarity_top_k", settings.SIMILARITY_TOP_K)),
+        )
+
+        _render_progress(bar_slot, msg_slot, 100, "완료!")
+        time.sleep(0.4)
+        bar_slot.empty(); msg_slot.empty()
+        st.rerun()
+
+    # 버튼을 누르지 않았다면 여기서 종료(아래 챗 UI 미노출)
+    st.stop()
+
+# 2) === 여기부터 챗 UI =========================================================
+# 대화 기록 상태
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+
+# 이전 메시지 렌더
+for m in st.session_state.messages:
+    with st.chat_message(m["role"]):
+        st.markdown(m["content"])
+
+st.markdown("---")
+
+# 모드 선택
+mode = st.radio(
+    "모드를 선택하세요",
+    ["💬 이유문법 설명", "🔎 구문 분석", "📚 독해 및 요약"],
+    horizontal=True,
+    key="mode_select",
+)
+
+# 입력창
+user_input = st.chat_input("질문을 입력하거나, 분석/요약할 문장이나 글을 붙여넣으세요.")
+if user_input:
+    # 유저 메시지 출력
+    st.session_state.messages.append({"role": "user", "content": user_input})
+    with st.chat_message("user"):
+        st.markdown(user_input)
+
+    # 프롬프트 선택
+    if mode == "💬 이유문법 설명":
+        system_prompt = EXPLAINER_PROMPT
+    elif mode == "🔎 구문 분석":
+        system_prompt = ANALYST_PROMPT
+    else:
+        system_prompt = READER_PROMPT
+
+    # 답변 생성
+    with st.spinner("AI 선생님이 답변을 생각하고 있어요..."):
+        answer = get_text_answer(st.session_state.query_engine, user_input, system_prompt)
+
+    # 어시스턴트 메시지 출력
+    st.session_state.messages.append({"role": "assistant", "content": answer})
+    with st.chat_message("assistant"):
+        st.markdown(answer)
+
+    st.rerun()
