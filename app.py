@@ -94,7 +94,10 @@ def run_app():
                 st.error(msg)
     with col2:
         ok, msg = smoke_test_drive()
-        st.success(msg) if ok else st.warning(msg)
+        if ok:
+            _ = st.success(msg)   # 반환 객체를 변수에 담아 버리면 추가 렌더링이 발생하지 않음
+        else:
+            _ = st.warning(msg)
 
     # ===== 두뇌 준비 (공통 인덱스 + LLM 2개) =====
     st.markdown("----")
