@@ -1,4 +1,4 @@
-# src/rag_engine.py — RAG 유틸(임베딩 1회 + LLM 2개 전략)
+# src/rag_engine.py — RAG 유틸(임베딩 1회 + LLM 2개) + 취소(캔슬) 지원
 
 from __future__ import annotations
 import os, json, shutil, re
@@ -7,17 +7,17 @@ from typing import Callable, Any, Mapping
 import streamlit as st
 from src.config import settings
 
+# 취소 신호용 예외
+class CancelledError(Exception):
+    """사용자가 '취소' 버튼을 눌러 실행을 중단했음을 나타냅니다."""
+    pass
+
 # ============================================================================
 # 0) 공통: 서비스계정 JSON 정규화 + Drive 서비스
 # ============================================================================
 
 def _normalize_sa(raw_sa: Any | None) -> Mapping[str, Any] | None:
-    """
-    서비스계정 JSON을 dict로 정규화.
-    - dict면 그대로
-    - str이면 json.loads 시도
-    - private_key가 실제 개행으로 들어간 잘못된 문자열을 자동 보정(개행 → \\n 이스케이프)
-    """
+    """서비스계정 JSON을 dict로 정규화(+private_key 개행 보정)"""
     if raw_sa is None:
         return None
     if isinstance(raw_sa, Mapping):
@@ -27,10 +27,12 @@ def _normalize_sa(raw_sa: Any | None) -> Mapping[str, Any] | None:
         s = raw_sa.strip()
         if not s:
             return None
+        # 1) 정상 JSON 시도
         try:
             return json.loads(s)
         except Exception:
             pass
+        # 2) private_key 개행 보정
         try:
             m = re.search(r'"private_key"\s*:\s*"(?P<key>.*?)"', s, re.DOTALL)
             if m:
@@ -54,10 +56,7 @@ def _build_drive_service(creds_dict):
 # ============================================================================
 
 def set_embed_provider(provider: str, api_key: str, embed_model: str):
-    """
-    임베딩 공급자만 지정해 LlamaIndex Settings.embed_model 을 설정한다.
-    (인덱스 생성은 이 설정을 사용)
-    """
+    """임베딩 공급자만 지정해 Settings.embed_model 설정"""
     from llama_index.core import Settings
     p = (provider or "google").lower()
     try:
@@ -77,10 +76,7 @@ def set_embed_provider(provider: str, api_key: str, embed_model: str):
         st.stop()
 
 def make_llm(provider: str, api_key: str, llm_model: str, temperature: float = 0.0):
-    """
-    요청된 공급자의 LLM 인스턴스만 만들어 반환 (Settings는 건드리지 않음).
-    같은 인덱스에 서로 다른 LLM을 붙여 사용할 때 쓴다.
-    """
+    """공급자의 LLM 인스턴스만 만들어 반환(Settings는 건드리지 않음)"""
     p = (provider or "google").lower()
     try:
         if p == "openai":
@@ -145,16 +141,18 @@ def preview_drive_files(max_items: int = 10) -> tuple[bool, str, list[dict]]:
         return (False, f"목록 조회 실패: {e}", [])
 
 # ============================================================================
-# 3) 인덱스 로딩/빌드 & 변경 감지(매니페스트)
+# 3) 인덱스 로딩/빌드 & 변경 감지(매니페스트) + 취소 지원
 # ============================================================================
 
-def _fetch_drive_manifest(creds_dict, folder_id: str) -> dict:
+def _fetch_drive_manifest(creds_dict, folder_id: str, is_cancelled: Callable[[], bool] | None = None) -> dict:
     svc = _build_drive_service(creds_dict)
     files = []
     page_token = None
     q = f"'{folder_id}' in parents and trashed=false"
     fields = "nextPageToken, files(id,name,mimeType,modifiedTime,md5Checksum,size)"
     while True:
+        if is_cancelled and is_cancelled():
+            raise CancelledError("사용자 취소(매니페스트 조회 중)")
         resp = svc.files().list(
             q=q, fields=fields, pageToken=page_token,
             pageSize=1000, supportsAllDrives=True, includeItemsFromAllDrives=True
@@ -212,20 +210,37 @@ def _build_index_with_progress(update_pct: Callable[[int, str | None], None],
                                gdrive_folder_id: str,
                                gcp_creds: Mapping[str, Any],
                                persist_dir: str,
-                               max_docs: int | None = None):
+                               max_docs: int | None = None,
+                               is_cancelled: Callable[[], bool] | None = None):
+    """인덱스 신규 생성(취소 체크 지원)"""
     from llama_index.core import VectorStoreIndex
     from llama_index.readers.google import GoogleDriveReader
+
+    if is_cancelled and is_cancelled():
+        raise CancelledError("사용자 취소(초기 단계)")
 
     update_pct(5, "Google Drive 인증 준비")
     if not gcp_creds:
         st.error("❌ 서비스계정 JSON을 읽을 수 없습니다.")
         st.stop()
 
+    if is_cancelled and is_cancelled():
+        raise CancelledError("사용자 취소(리더 초기화 전)")
+
     update_pct(15, "Drive 리더 초기화")
     try:
-        loader = GoogleDriveReader(service_account_key=gcp_creds)   # 신형 API
-    except TypeError:
-        loader = GoogleDriveReader(gcp_creds_dict=gcp_creds)        # 구형 호환
+        try:
+            loader = GoogleDriveReader(service_account_key=gcp_creds)   # 신형
+        except TypeError:
+            loader = GoogleDriveReader(gcp_creds_dict=gcp_creds)        # 구형
+    except Exception as e:
+        st.error("Google Drive 리더 초기화 실패")
+        with st.expander("자세한 오류 보기", expanded=True):
+            st.exception(e)
+        st.stop()
+
+    if is_cancelled and is_cancelled():
+        raise CancelledError("사용자 취소(문서 로드 전)")
 
     update_pct(30, "문서 로드 중…")
     try:
@@ -236,12 +251,18 @@ def _build_index_with_progress(update_pct: Callable[[int, str | None], None],
             st.exception(e)
         st.stop()
 
+    if is_cancelled and is_cancelled():
+        raise CancelledError("사용자 취소(문서 로드 후)")
+
     # 빠른 모드: 개수 제한
     if max_docs and len(documents) > max_docs:
         documents = documents[:max_docs]
         update_msg(f"빠른 모드: 처음 {max_docs}개 문서만 인덱싱")
 
     update_pct(60, f"문서 {len(documents)}개 → 인덱스 생성")
+    if is_cancelled and is_cancelled():
+        raise CancelledError("사용자 취소(인덱스 생성 전)")
+
     try:
         index = VectorStoreIndex.from_documents(documents, show_progress=True)
     except Exception as e:
@@ -249,6 +270,9 @@ def _build_index_with_progress(update_pct: Callable[[int, str | None], None],
         with st.expander("자세한 오류 보기", expanded=True):
             st.exception(e)
         st.stop()
+
+    if is_cancelled and is_cancelled():
+        raise CancelledError("사용자 취소(인덱스 생성 후)")
 
     update_pct(90, "두뇌 저장 중")
     try:
@@ -268,15 +292,20 @@ def get_or_build_index(update_pct: Callable[[int, str | None], None],
                        raw_sa: Any | None,
                        persist_dir: str,
                        manifest_path: str,
-                       max_docs: int | None = None):
+                       max_docs: int | None = None,
+                       is_cancelled: Callable[[], bool] | None = None):
+    """변경 없으면 로딩, 있으면 빌드(취소 체크 지원)"""
     gcp_creds = _normalize_sa(raw_sa)
     if not gcp_creds:
         st.error("서비스계정 JSON 파싱에 실패했습니다.")
         st.stop()
 
     update_pct(5, "드라이브 변경 확인 중…")
-    remote = _fetch_drive_manifest(gcp_creds, gdrive_folder_id)
+    remote = _fetch_drive_manifest(gcp_creds, gdrive_folder_id, is_cancelled=is_cancelled)
     local = _load_local_manifest(manifest_path)
+
+    if is_cancelled and is_cancelled():
+        raise CancelledError("사용자 취소(변경 확인 단계)")
 
     if os.path.exists(persist_dir) and not _manifests_differ(local, remote):
         update_pct(25, "변경 없음 → 저장된 두뇌 로딩")
@@ -288,7 +317,10 @@ def get_or_build_index(update_pct: Callable[[int, str | None], None],
         shutil.rmtree(persist_dir)
 
     update_pct(40, "변경 감지 → 인덱스 생성")
-    idx = _build_index_with_progress(update_pct, update_msg, gdrive_folder_id, gcp_creds, persist_dir, max_docs=max_docs)
+    idx = _build_index_with_progress(
+        update_pct, update_msg, gdrive_folder_id, gcp_creds, persist_dir,
+        max_docs=max_docs, is_cancelled=is_cancelled
+    )
 
     _save_local_manifest(manifest_path, remote)
     update_pct(100, "완료!")
