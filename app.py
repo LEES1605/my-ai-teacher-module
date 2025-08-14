@@ -1,4 +1,4 @@
-# app.py — 두 엔진(🧠Gemini / 🧠ChatGPT) 준비 + 선택 답변 UI
+# app.py — 한 번에 두 엔진(🧠Gemini / 🧠ChatGPT) 준비 + 각자 진행바 + 선택 답변
 
 import streamlit as st
 import pandas as pd
@@ -12,7 +12,7 @@ from src.ui import load_css, render_header
 load_css()
 render_header()
 
-st.info("✅ 베이스라인 확인용 화면입니다. 이제부터 Gemini/ChatGPT 두 엔진을 각각 준비하고, 답변 시 선택할 수 있어요.")
+st.info("✅ 한 번의 클릭으로 Gemini/ChatGPT 두 엔진을 모두 준비하고, 각자 진행 상황을 따로 볼 수 있어요.")
 
 # ===== Google Drive 연결 테스트 ===============================================
 # 임포트 실패 시 상세 오류 보여주기
@@ -79,11 +79,12 @@ if st.button("두뇌 준비 시뮬레이션 시작"):
     bar_slot.empty(); msg_slot.empty()
     st.success("시뮬레이션 완료 — UI/진행 흐름 정상입니다.")
 
-# ===== 두뇌 준비 (실전) — Gemini / ChatGPT 각각 준비 ============================
+# ===== 두뇌 준비 (실전) — 버튼 하나로 두 엔진 동시에 진행 ======================
 st.markdown("----")
-st.subheader("🧠 두뇌 준비 (실전) — Gemini & ChatGPT")
+st.subheader("🧠 두뇌 준비 (실전) — 🚀 한 번에 Gemini & ChatGPT")
 
 from src.config import settings
+# LLM/Index 유틸 임포트 (오류 시 상세 표시)
 try:
     from src.rag_engine import init_llama_settings, get_or_build_index, get_text_answer
 except Exception:
@@ -101,18 +102,17 @@ def _render_progress(slot_bar, slot_msg, pct: int, msg: str | None = None):
     if msg is not None:
         slot_msg.markdown(f"<div class='gp-msg'>{msg}</div>", unsafe_allow_html=True)
 
-# 공급자별 기본 모델 (secrets 없을 때 안전 기본값)
 DEFAULTS = {
     "google": {"llm": "gemini-1.5-pro", "embed": "text-embedding-004"},
     "openai": {"llm": "gpt-4o-mini",     "embed": "text-embedding-3-small"},
 }
 
-def build_brain(provider: str):
+def _build_one(provider: str, bar_slot, msg_slot):
+    """한 공급자에 대해 진행바/메시지를 해당 슬롯에만 그리며 두뇌를 준비."""
     provider = provider.lower()
-    bar = st.empty(); msg = st.empty()
-    _render_progress(bar, msg, 0, f"{provider.title()} 두뇌 준비 시작…")
+    _render_progress(bar_slot, msg_slot, 0, f"{provider.title()} 두뇌 준비 시작…")
 
-    # 모델 선택 (secrets에 LLM_MODEL/EMBED_MODEL가 있으면 참고하되, 공급자에 맞지 않으면 기본값 사용)
+    # 1) 모델/키/경로 결정
     if provider == "google":
         api_key = settings.GEMINI_API_KEY.get_secret_value()
         llm_model = DEFAULTS["google"]["llm"] if "gemini" not in getattr(settings, "LLM_MODEL", "") else settings.LLM_MODEL
@@ -125,11 +125,10 @@ def build_brain(provider: str):
         persist_dir = f"{getattr(settings, 'PERSIST_DIR', '/tmp/my_ai_teacher/storage_gdrive')}_openai"
 
     if not api_key:
-        _render_progress(bar, msg, 100, "키 누락")
-        st.error(f"{provider.title()} API 키가 없습니다. secrets.toml을 확인하세요.")
-        st.stop()
+        _render_progress(bar_slot, msg_slot, 100, "키 누락 — secrets.toml 확인")
+        return None
 
-    # LLM/임베딩 초기화 (임베딩은 Settings에 설정, LLM 객체는 반환)
+    # 2) LLM/임베딩 초기화 (임베딩은 Settings에 설정, LLM 인스턴스 반환)
     try:
         llm = init_llama_settings(
             provider=provider,
@@ -139,17 +138,16 @@ def build_brain(provider: str):
             temperature=float(st.session_state.get("temperature", 0.0)),
         )
     except Exception as e:
-        _render_progress(bar, msg, 100, "LLM/임베딩 설정 오류")
-        st.error(f"LLM/임베딩 초기화 중 오류: {e}")
-        st.stop()
+        _render_progress(bar_slot, msg_slot, 100, f"LLM/임베딩 설정 오류: {e}")
+        return None
 
-    # 인덱스 로딩/빌드
+    # 3) 인덱스 로딩/빌드 (해당 진행바만 갱신)
     try:
         progress = {"pct": 0}
         def update_pct(pct: int, m: str | None = None):
-            progress["pct"] = int(pct); _render_progress(bar, msg, progress["pct"], m)
+            progress["pct"] = int(pct); _render_progress(bar_slot, msg_slot, progress["pct"], m)
         def update_msg(m: str):
-            _render_progress(bar, msg, progress["pct"], m)
+            _render_progress(bar_slot, msg_slot, progress["pct"], m)
 
         index = get_or_build_index(
             update_pct=update_pct,
@@ -160,45 +158,50 @@ def build_brain(provider: str):
             manifest_path=getattr(settings, "MANIFEST_PATH", "/tmp/my_ai_teacher/drive_manifest.json"),
         )
     except Exception as e:
-        _render_progress(bar, msg, 100, "인덱스 준비 실패")
-        st.error("인덱스 준비 중 오류가 발생했습니다. 폴더 권한/네트워크/requirements를 확인하세요.")
-        with st.expander("오류 상세 보기"):
-            st.exception(e)
-        st.stop()
+        _render_progress(bar_slot, msg_slot, 100, f"인덱스 준비 실패: {e}")
+        return None
 
-    # 공급자별 QueryEngine 생성(해당 LLM을 명시 주입)
+    # 4) QueryEngine 생성(이 공급자의 LLM을 명시 주입)
     qe = index.as_query_engine(
         llm=llm,
         response_mode=st.session_state.get("response_mode", getattr(settings, "RESPONSE_MODE", "compact")),
         similarity_top_k=int(st.session_state.get("similarity_top_k", getattr(settings, "SIMILARITY_TOP_K", 5))),
     )
 
-    # 세션에 저장
+    # 5) 세션에 저장 + 완료 표시
     key = "qe_google" if provider == "google" else "qe_openai"
     st.session_state[key] = qe
+    _render_progress(bar_slot, msg_slot, 100, "완료!")
+    return qe
 
-    _render_progress(bar, msg, 100, "완료!")
-    time.sleep(0.2); bar.empty(); msg.empty()
-    st.success(f"{provider.title()} 두뇌 준비 완료!")
+# === ▶ 버튼 하나로 두 엔진 동시 준비(순차 실행, 각자 진행바 별도 표시) ==========
+st.markdown("### 🚀 두 엔진 한꺼번에 준비")
+c_g, c_o = st.columns(2)
+with c_g: st.caption("Gemini 진행"); g_bar = st.empty(); g_msg = st.empty()
+with c_o: st.caption("ChatGPT 진행"); o_bar = st.empty(); o_msg = st.empty()
 
-# 버튼 2개 (좌: Gemini / 우: ChatGPT)
-c1, c2 = st.columns(2)
-with c1:
-    if st.button("🧠 Gemini 두뇌 준비", use_container_width=True):
-        build_brain("google")
-with c2:
-    if st.button("🧠 ChatGPT 두뇌 준비", use_container_width=True):
-        build_brain("openai")
+if st.button("🚀 두 엔진 한꺼번에 준비", use_container_width=True):
+    # 시작 상태 표시
+    _render_progress(g_bar, g_msg, 0, "대기 중…")
+    _render_progress(o_bar, o_msg, 0, "대기 중…")
+
+    # 순차 실행(안정/자원 보호 목적) — 각자 바/메시지는 독립적으로 업데이트됨
+    _build_one("google", g_bar, g_msg)
+    _build_one("openai", o_bar, o_msg)
+
+    # 끝난 뒤 리런(채팅 UI 갱신)
+    time.sleep(0.2)
+    st.rerun()
 
 # ===== 대화 UI — 답변할 AI 선택 후 질문 ========================================
 st.markdown("---")
 st.subheader("💬 대화")
 
-# 준비 상태 안내
+# 준비 상태
 ready_google = "qe_google" in st.session_state
 ready_openai = "qe_openai" in st.session_state
 if not (ready_google or ready_openai):
-    st.info("먼저 위에서 **Gemini** 또는 **ChatGPT** 중 하나 이상을 준비해 주세요.")
+    st.info("먼저 위의 **[🚀 두 엔진 한꺼번에 준비]**를 클릭해 주세요. (OpenAI 키가 없으면 Gemini만 준비됩니다)")
     st.stop()
 
 # 대화 기록
