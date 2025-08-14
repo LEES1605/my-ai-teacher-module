@@ -55,7 +55,10 @@ with col1:
             st.error(msg)
 with col2:
     ok, msg = smoke_test_drive()
-    st.success(msg) if ok else st.warning(msg)
+    if ok:
+        st.success(msg)
+    else:
+        st.warning(msg)
 
 # ===== 두뇌 준비 (실전) — 공통 인덱스 + LLM 2개 ===============================
 st.markdown("----")
