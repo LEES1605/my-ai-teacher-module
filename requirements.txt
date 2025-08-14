@@ -9,12 +9,15 @@ google-auth-httplib2
 
 # --- LlamaIndex (모듈식) ---
 llama-index-core
-llama-index-llms-google-genai
+llama-index-llms-gemini
 llama-index-embeddings-google
 llama-index-readers-google
 
-# --- Google GenAI SDK (내부에서 사용) ---
+# (구버전 호환이 필요할 때만 다음 한 줄도 추가해도 됨)
+# llama-index-llms-google-genai
+
+# --- Google GenAI SDK ---
 google-generativeai
 
-# --- 호환 문제 방지 ---
+# --- 호환 ---
 protobuf<5
