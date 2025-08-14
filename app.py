@@ -251,7 +251,9 @@ if ss.prep_both_running:
 
 st.caption("준비 버튼을 다시 활성화하려면 아래 재설정 버튼을 누르세요.")
 if st.button("🔧 재설정(버튼 다시 활성화)", disabled=not ss.prep_both_done):
-    ss.prep_both_done = False; ss.p_shared = 0; st.experimental_rerun()
+    ss.prep_both_done = False
+    ss.p_shared = 0
+    st.rerun()  # ← 최신 Streamlit
 
 # ===== 대화 UI — 항상 👥 그룹토론 + 로그 저장 ==================================
 st.markdown("---"); st.subheader("💬 그룹토론 대화 (사용자 → Gemini 1차 → ChatGPT 보완/검증)")
