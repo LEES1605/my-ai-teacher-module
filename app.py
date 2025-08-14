@@ -129,7 +129,7 @@ st.markdown("----")
 st.subheader("🧠 두뇌 준비 (실전) & 대화")
 
 # 필요한 엔진/설정 유틸들
-from src.config import settings, PERSIST_DIR, MANIFEST_PATH
+from src.config import settings  # ← import 단순화 (상수는 settings.*로 접근)
 from src.rag_engine import init_llama_settings, get_or_build_index, get_text_answer
 from src.prompts import EXPLAINER_PROMPT, ANALYST_PROMPT, READER_PROMPT
 
@@ -180,8 +180,8 @@ if "query_engine" not in st.session_state:
                 update_msg=update_msg,
                 gdrive_folder_id=settings.GDRIVE_FOLDER_ID,
                 raw_sa=settings.GDRIVE_SERVICE_ACCOUNT_JSON,
-                persist_dir=PERSIST_DIR,
-                manifest_path=MANIFEST_PATH,
+                persist_dir=getattr(settings, "PERSIST_DIR", "/tmp/my_ai_teacher/storage_gdrive"),
+                manifest_path=getattr(settings, "MANIFEST_PATH", "/tmp/my_ai_teacher/drive_manifest.json"),
             )
         except Exception as e:
             _render_progress(bar_slot, msg_slot, 100, "인덱스 준비 실패")
@@ -190,8 +190,8 @@ if "query_engine" not in st.session_state:
 
         # 질의 엔진 준비
         st.session_state.query_engine = index.as_query_engine(
-            response_mode=st.session_state.get("response_mode", settings.RESPONSE_MODE),
-            similarity_top_k=int(st.session_state.get("similarity_top_k", settings.SIMILARITY_TOP_K)),
+            response_mode=st.session_state.get("response_mode", getattr(settings, "RESPONSE_MODE", "compact")),
+            similarity_top_k=int(st.session_state.get("similarity_top_k", getattr(settings, "SIMILARITY_TOP_K", 5))),
         )
 
         _render_progress(bar_slot, msg_slot, 100, "완료!")
