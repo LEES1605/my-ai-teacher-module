@@ -24,7 +24,16 @@ st.info("✅ 베이스라인 확인용 화면입니다. 이 화면이 보이면 
 st.write("이제 여기서부터 RAG/Drive/관리자 기능을 단계적으로 붙여갑니다.")
 
 # ===== Google Drive 연결 테스트 ===============================================
-from src.rag_engine import smoke_test_drive, preview_drive_files
+# ✅ 진단용: rag_engine 임포트 실패 시 실제 에러를 화면에 표시
+try:
+    from src.rag_engine import smoke_test_drive, preview_drive_files
+except Exception:
+    st.error("`src.rag_engine` 임포트에 실패했습니다. 아래 상세 오류를 참고하세요.")
+    import os, traceback
+    st.write("파일 존재 여부:", os.path.exists("src/rag_engine.py"))
+    with st.expander("임포트 스택(원인)", expanded=True):
+        st.code(traceback.format_exc())
+    st.stop()
 
 st.markdown("## 🔗 Google Drive 연결 테스트")
 st.caption("버튼을 눌러 Drive 폴더 연결이 정상인지 확인하세요. 먼저 Secrets 설정과 폴더 공유(서비스계정 이메일 Viewer 이상)가 필요합니다.")
