@@ -1,8 +1,6 @@
 # app.py — 최소 동작 + Drive 테스트 + (실전) 두뇌 준비 + 챗 UI
 
 import streamlit as st
-import json
-from collections.abc import Mapping  # (현재는 미사용이지만 향후 확장 대비)
 import pandas as pd  # 링크 컬럼 표시용 DataFrame
 import time
 
@@ -167,7 +165,7 @@ if "query_engine" not in st.session_state:
             st.error(f"LLM/임베딩 초기화 중 오류: {e}")
             st.stop()
 
-                       # 인덱스 로딩/빌드
+        # 인덱스 로딩/빌드
         try:
             # session_state 대신 가변 컨테이너로 현재 진행률 공유
             progress = {"pct": 0}
