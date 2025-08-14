@@ -1,235 +1,207 @@
-# app.py — 최소 동작 + Drive 테스트 + (실전) 두뇌 준비 + 챗 UI
+# app.py — 두 엔진(🧠Gemini / 🧠ChatGPT) 준비 + 선택 답변 UI
 
 import streamlit as st
-import pandas as pd  # 링크 컬럼 표시용 DataFrame
+import pandas as pd
 import time
 
-# ===== 페이지 설정(항상 최상단) ================================================
-st.set_page_config(
-    page_title="나의 AI 영어 교사",
-    layout="wide",
-    initial_sidebar_state="collapsed"
-)
+# ===== 페이지 설정 ============================================================
+st.set_page_config(page_title="나의 AI 영어 교사", layout="wide", initial_sidebar_state="collapsed")
 
 # ===== 기본 UI/스타일 =========================================================
-from src.ui import load_css, render_header  # 기존 프로젝트 함수 그대로 사용
+from src.ui import load_css, render_header
 load_css()
 render_header()
 
-# (운영 전환: 디버그 박스 주석 처리)
-# with st.expander("🔐 디버그: 현재 보이는 secrets 키"):
-#     st.write(sorted(st.secrets.keys()))
-
-st.info("✅ 베이스라인 확인용 화면입니다. 이 화면이 보이면 모듈 구조가 정상입니다.")
-st.write("이제 여기서부터 RAG/Drive/관리자 기능을 단계적으로 붙여갑니다.")
+st.info("✅ 베이스라인 확인용 화면입니다. 이제부터 Gemini/ChatGPT 두 엔진을 각각 준비하고, 답변 시 선택할 수 있어요.")
 
 # ===== Google Drive 연결 테스트 ===============================================
-# ✅ 진단용: rag_engine 임포트 실패 시 실제 에러를 화면에 표시
+# 임포트 실패 시 상세 오류 보여주기
 try:
     from src.rag_engine import smoke_test_drive, preview_drive_files
 except Exception:
-    st.error("`src.rag_engine` 임포트에 실패했습니다. 아래 상세 오류를 참고하세요.")
-    import os, traceback
+    st.error("`src.rag_engine` 임포트에 실패했습니다.")
+    import traceback, os
     st.write("파일 존재 여부:", os.path.exists("src/rag_engine.py"))
     with st.expander("임포트 스택(원인)", expanded=True):
         st.code(traceback.format_exc())
     st.stop()
 
 st.markdown("## 🔗 Google Drive 연결 테스트")
-st.caption("버튼을 눌러 Drive 폴더 연결이 정상인지 확인하세요. 먼저 Secrets 설정과 폴더 공유(서비스계정 이메일 Viewer 이상)가 필요합니다.")
+st.caption("버튼을 눌러 Drive 폴더 연결이 정상인지 확인하세요. (서비스계정에 Viewer 이상 공유 필요)")
 
-col1, col2 = st.columns([0.65, 0.35])  # 왼쪽(표) 공간을 넓게
+col1, col2 = st.columns([0.65, 0.35])
 with col1:
     if st.button("폴더 파일 미리보기 (최신 10개)", use_container_width=True):
         ok, msg, rows = preview_drive_files(max_items=10)
-        if ok:
-            if rows:
-                # rows → DataFrame으로 변환하고, 열 순서/폭 최적화
-                df = pd.DataFrame(rows)
-                # 긴 MIME을 짧은 유형으로 변환
-                df["type"] = df["mime"].str.replace("application/vnd.google-apps.", "", regex=False)
-                df = df.rename(columns={"modified": "modified_at"})
-                # 열 순서를 '파일명, 열기, 유형, 수정시각'으로 (열기가 앞쪽에 보이도록)
-                df = df[["name", "link", "type", "modified_at"]]
-
-                st.dataframe(
-                    df,
-                    use_container_width=True,
-                    height=360,
-                    column_config={
-                        "name": st.column_config.TextColumn("파일명"),
-                        "link": st.column_config.LinkColumn("open", display_text="열기"),
-                        "type": st.column_config.TextColumn("유형"),
-                        "modified_at": st.column_config.TextColumn("수정시각"),
-                    },
-                    hide_index=True,
-                )
-            else:
-                st.warning("폴더에 파일이 없거나 접근할 수 없습니다.")
+        if ok and rows:
+            df = pd.DataFrame(rows)
+            df["type"] = df["mime"].str.replace("application/vnd.google-apps.", "", regex=False)
+            df = df.rename(columns={"modified": "modified_at"})
+            df = df[["name", "link", "type", "modified_at"]]
+            st.dataframe(
+                df,
+                use_container_width=True,
+                height=360,
+                column_config={
+                    "name": st.column_config.TextColumn("파일명"),
+                    "link": st.column_config.LinkColumn("open", display_text="열기"),
+                    "type": st.column_config.TextColumn("유형"),
+                    "modified_at": st.column_config.TextColumn("수정시각"),
+                },
+                hide_index=True,
+            )
+        elif ok:
+            st.warning("폴더에 파일이 없거나 접근할 수 없습니다.")
         else:
             st.error(msg)
-            with st.expander("문제 해결 가이드"):
-                st.write("- `GDRIVE_FOLDER_ID` / 서비스계정 JSON(secrets) 값을 확인하세요.")
-                st.write("- Google Drive에서 **서비스계정 이메일(client_email)** 에 폴더 ‘보기 권한’을 공유하세요.")
-                st.write("- `requirements.txt`에 Drive 관련 라이브러리를 추가하고 다시 배포하세요.")
-
 with col2:
     ok, msg = smoke_test_drive()
-    if ok:
-        st.success(msg)
-    else:
-        st.warning(msg)
-# === /Google Drive 연결 테스트 ===
+    st.success(msg) if ok else st.warning(msg)
 
 # ===== 두뇌 준비 (시뮬레이션) ==================================================
 st.markdown("----")
 st.subheader("🧠 두뇌 준비 (시뮬레이션)")
-
-start_sim = st.button("두뇌 준비 시뮬레이션 시작")
-if start_sim:
-    # 진행바 슬롯
-    bar_slot = st.empty()
-    msg_slot = st.empty()
-
+if st.button("두뇌 준비 시뮬레이션 시작"):
+    bar_slot = st.empty(); msg_slot = st.empty()
     def render_progress(pct: int, msg: str | None = None):
         p = max(0, min(100, int(pct)))
         bar_slot.markdown(f"""
-<div class="gp-wrap">
-  <div class="gp-fill" style="width:{p}%"></div>
-  <div class="gp-label">{p}%</div>
-</div>
+<div class="gp-wrap"><div class="gp-fill" style="width:{p}%"></div><div class="gp-label">{p}%</div></div>
 """, unsafe_allow_html=True)
-        if msg is not None:
-            msg_slot.markdown(f"<div class='gp-msg'>{msg}</div>", unsafe_allow_html=True)
-
-    # 1) 시작
-    render_progress(5, "시작…")
-    time.sleep(0.3)
-
-    # 2) Secrets 간단 점검(값 존재 여부만 확인)
+        if msg: msg_slot.markdown(f"<div class='gp-msg'>{msg}</div>", unsafe_allow_html=True)
+    render_progress(5, "시작…"); time.sleep(0.2)
     render_progress(25, "비밀키 점검…")
-    missing = []
-    for k in ("GEMINI_API_KEY", "GDRIVE_FOLDER_ID"):
-        if k not in st.secrets or not str(st.secrets[k]).strip():
-            missing.append(k)
-    if missing:
-        render_progress(100, "실패")
-        st.error("필수 Secrets가 없습니다: " + ", ".join(missing))
-        st.stop()
-
-    # 3) 의존성/환경 체크(가벼운 수면으로 시뮬레이션)
-    render_progress(60, "환경 준비…")
-    time.sleep(0.4)
-
-    # 4) 저장/정리 시뮬레이션
-    render_progress(90, "마무리…")
-    time.sleep(0.3)
-
-    # 5) 완료
-    render_progress(100, "완료!")
-    time.sleep(0.4)
+    missing = [k for k in ("GEMINI_API_KEY", "GDRIVE_FOLDER_ID") if not str(st.secrets.get(k, "")).strip()]
+    if missing: render_progress(100, "실패"); st.error("필수 Secrets 없음: " + ", ".join(missing)); st.stop()
+    render_progress(60, "환경 준비…"); time.sleep(0.2)
+    render_progress(90, "마무리…"); time.sleep(0.2)
+    render_progress(100, "완료!"); time.sleep(0.2)
     bar_slot.empty(); msg_slot.empty()
     st.success("시뮬레이션 완료 — UI/진행 흐름 정상입니다.")
 
-# ===== 두뇌 준비 (실전) + 챗 UI ===============================================
+# ===== 두뇌 준비 (실전) — Gemini / ChatGPT 각각 준비 ============================
 st.markdown("----")
-st.subheader("🧠 두뇌 준비 (실전) & 대화")
+st.subheader("🧠 두뇌 준비 (실전) — Gemini & ChatGPT")
 
-# 필요한 엔진/설정 유틸들
-from src.config import settings  # ← import 단순화 (상수는 settings.*로 접근)
-
-# ✅ 진단용: rag_engine 임포트 실패 시 상세 오류 표시
+from src.config import settings
 try:
     from src.rag_engine import init_llama_settings, get_or_build_index, get_text_answer
 except Exception:
-    st.error("`src.rag_engine` 임포트(LLM/RAG 유틸) 단계에서 오류가 발생했습니다.")
-    import os, traceback
-    st.write("파일 존재 여부:", os.path.exists("src/rag_engine.py"))
+    st.error("`src.rag_engine` 임포트(LLM/RAG) 단계에서 오류가 발생했습니다.")
+    import traceback
     with st.expander("임포트 스택(원인)", expanded=True):
         st.code(traceback.format_exc())
     st.stop()
 
-from src.prompts import EXPLAINER_PROMPT, ANALYST_PROMPT, READER_PROMPT
-
-# 진행 표시용 공통 함수(시뮬레이션과 동일 UI)
 def _render_progress(slot_bar, slot_msg, pct: int, msg: str | None = None):
     p = max(0, min(100, int(pct)))
     slot_bar.markdown(f"""
-<div class="gp-wrap">
-  <div class="gp-fill" style="width:{p}%"></div>
-  <div class="gp-label">{p}%</div>
-</div>
+<div class="gp-wrap"><div class="gp-fill" style="width:{p}%"></div><div class="gp-label">{p}%</div></div>
 """, unsafe_allow_html=True)
     if msg is not None:
         slot_msg.markdown(f"<div class='gp-msg'>{msg}</div>", unsafe_allow_html=True)
 
-# 1) 아직 query_engine이 없으면 준비 버튼 노출
-if "query_engine" not in st.session_state:
-    st.info("AI 교사를 시작하려면 아래 버튼을 눌러주세요. 처음에는 학습량에 따라 시간이 소요될 수 있습니다.")
+# 공급자별 기본 모델 (secrets 없을 때 안전 기본값)
+DEFAULTS = {
+    "google": {"llm": "gemini-1.5-pro", "embed": "text-embedding-004"},
+    "openai": {"llm": "gpt-4o-mini",     "embed": "text-embedding-3-small"},
+}
 
-    if st.button("🧠 AI 두뇌 준비 시작하기", key="start_brain_real"):
-        bar_slot = st.empty()
-        msg_slot = st.empty()
-        _render_progress(bar_slot, msg_slot, 0, "두뇌 준비를 시작합니다…")
+def build_brain(provider: str):
+    provider = provider.lower()
+    bar = st.empty(); msg = st.empty()
+    _render_progress(bar, msg, 0, f"{provider.title()} 두뇌 준비 시작…")
 
-        # LLM/임베딩 설정 (키 점검 포함)
-        try:
-            init_llama_settings(
-                api_key=settings.GEMINI_API_KEY.get_secret_value(),
-                llm_model=settings.LLM_MODEL,
-                embed_model=settings.EMBED_MODEL,
-                temperature=float(st.session_state.get("temperature", 0.0)),
-            )
-        except Exception as e:
-            _render_progress(bar_slot, msg_slot, 100, "LLM/임베딩 설정 오류")
-            st.error(f"LLM/임베딩 초기화 중 오류: {e}")
-            st.stop()
+    # 모델 선택 (secrets에 LLM_MODEL/EMBED_MODEL가 있으면 참고하되, 공급자에 맞지 않으면 기본값 사용)
+    if provider == "google":
+        api_key = settings.GEMINI_API_KEY.get_secret_value()
+        llm_model = DEFAULTS["google"]["llm"] if "gemini" not in getattr(settings, "LLM_MODEL", "") else settings.LLM_MODEL
+        embed_model = DEFAULTS["google"]["embed"] if "embedding" not in getattr(settings, "EMBED_MODEL", "") else settings.EMBED_MODEL
+        persist_dir = f"{getattr(settings, 'PERSIST_DIR', '/tmp/my_ai_teacher/storage_gdrive')}_google"
+    else:
+        api_key = getattr(settings, "OPENAI_API_KEY", None).get_secret_value() if hasattr(settings, "OPENAI_API_KEY") else ""
+        llm_model = getattr(settings, "OPENAI_LLM_MODEL", DEFAULTS["openai"]["llm"])
+        embed_model = getattr(settings, "OPENAI_EMBED_MODEL", DEFAULTS["openai"]["embed"])
+        persist_dir = f"{getattr(settings, 'PERSIST_DIR', '/tmp/my_ai_teacher/storage_gdrive')}_openai"
 
-        # 인덱스 로딩/빌드
-        try:
-            # session_state 대신 가변 컨테이너로 현재 진행률 공유
-            progress = {"pct": 0}
+    if not api_key:
+        _render_progress(bar, msg, 100, "키 누락")
+        st.error(f"{provider.title()} API 키가 없습니다. secrets.toml을 확인하세요.")
+        st.stop()
 
-            def update_pct(pct: int, msg: str | None = None):
-                progress["pct"] = int(pct)
-                _render_progress(bar_slot, msg_slot, progress["pct"], msg)
-
-            def update_msg(msg: str):
-                _render_progress(bar_slot, msg_slot, progress["pct"], msg)
-
-            index = get_or_build_index(
-                update_pct=update_pct,
-                update_msg=update_msg,
-                gdrive_folder_id=settings.GDRIVE_FOLDER_ID,
-                raw_sa=settings.GDRIVE_SERVICE_ACCOUNT_JSON,
-                persist_dir=getattr(settings, "PERSIST_DIR", "/tmp/my_ai_teacher/storage_gdrive"),
-                manifest_path=getattr(settings, "MANIFEST_PATH", "/tmp/my_ai_teacher/drive_manifest.json"),
-            )
-
-
-        except Exception as e:
-            _render_progress(bar_slot, msg_slot, 100, "인덱스 준비 실패")
-            st.error("인덱스 준비 중 오류가 발생했습니다. 폴더 권한/네트워크/requirements를 확인하세요.")
-            with st.expander("오류 상세 보기"):
-                st.exception(e)
-            st.stop()
-
-        # 질의 엔진 준비
-        st.session_state.query_engine = index.as_query_engine(
-            response_mode=st.session_state.get("response_mode", getattr(settings, "RESPONSE_MODE", "compact")),
-            similarity_top_k=int(st.session_state.get("similarity_top_k", getattr(settings, "SIMILARITY_TOP_K", 5))),
+    # LLM/임베딩 초기화 (임베딩은 Settings에 설정, LLM 객체는 반환)
+    try:
+        llm = init_llama_settings(
+            provider=provider,
+            api_key=api_key,
+            llm_model=llm_model,
+            embed_model=embed_model,
+            temperature=float(st.session_state.get("temperature", 0.0)),
         )
+    except Exception as e:
+        _render_progress(bar, msg, 100, "LLM/임베딩 설정 오류")
+        st.error(f"LLM/임베딩 초기화 중 오류: {e}")
+        st.stop()
 
-        _render_progress(bar_slot, msg_slot, 100, "완료!")
-        time.sleep(0.4)
-        bar_slot.empty(); msg_slot.empty()
-        st.rerun()
+    # 인덱스 로딩/빌드
+    try:
+        progress = {"pct": 0}
+        def update_pct(pct: int, m: str | None = None):
+            progress["pct"] = int(pct); _render_progress(bar, msg, progress["pct"], m)
+        def update_msg(m: str):
+            _render_progress(bar, msg, progress["pct"], m)
 
-    # 버튼을 누르지 않았다면 여기서 종료(아래 챗 UI 미노출)
+        index = get_or_build_index(
+            update_pct=update_pct,
+            update_msg=update_msg,
+            gdrive_folder_id=settings.GDRIVE_FOLDER_ID,
+            raw_sa=settings.GDRIVE_SERVICE_ACCOUNT_JSON,
+            persist_dir=persist_dir,
+            manifest_path=getattr(settings, "MANIFEST_PATH", "/tmp/my_ai_teacher/drive_manifest.json"),
+        )
+    except Exception as e:
+        _render_progress(bar, msg, 100, "인덱스 준비 실패")
+        st.error("인덱스 준비 중 오류가 발생했습니다. 폴더 권한/네트워크/requirements를 확인하세요.")
+        with st.expander("오류 상세 보기"):
+            st.exception(e)
+        st.stop()
+
+    # 공급자별 QueryEngine 생성(해당 LLM을 명시 주입)
+    qe = index.as_query_engine(
+        llm=llm,
+        response_mode=st.session_state.get("response_mode", getattr(settings, "RESPONSE_MODE", "compact")),
+        similarity_top_k=int(st.session_state.get("similarity_top_k", getattr(settings, "SIMILARITY_TOP_K", 5))),
+    )
+
+    # 세션에 저장
+    key = "qe_google" if provider == "google" else "qe_openai"
+    st.session_state[key] = qe
+
+    _render_progress(bar, msg, 100, "완료!")
+    time.sleep(0.2); bar.empty(); msg.empty()
+    st.success(f"{provider.title()} 두뇌 준비 완료!")
+
+# 버튼 2개 (좌: Gemini / 우: ChatGPT)
+c1, c2 = st.columns(2)
+with c1:
+    if st.button("🧠 Gemini 두뇌 준비", use_container_width=True):
+        build_brain("google")
+with c2:
+    if st.button("🧠 ChatGPT 두뇌 준비", use_container_width=True):
+        build_brain("openai")
+
+# ===== 대화 UI — 답변할 AI 선택 후 질문 ========================================
+st.markdown("---")
+st.subheader("💬 대화")
+
+# 준비 상태 안내
+ready_google = "qe_google" in st.session_state
+ready_openai = "qe_openai" in st.session_state
+if not (ready_google or ready_openai):
+    st.info("먼저 위에서 **Gemini** 또는 **ChatGPT** 중 하나 이상을 준비해 주세요.")
     st.stop()
 
-# 2) === 여기부터 챗 UI =========================================================
-# 대화 기록 상태
+# 대화 기록
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
@@ -238,39 +210,37 @@ for m in st.session_state.messages:
     with st.chat_message(m["role"]):
         st.markdown(m["content"])
 
-st.markdown("---")
+# 어떤 AI로 답변 받을지 선택
+choices = []
+if ready_google: choices.append("Gemini")
+if ready_openai: choices.append("ChatGPT")
+answer_with = st.radio("답변할 AI 선택", choices, horizontal=True, index=0)
 
-# 모드 선택
-mode = st.radio(
-    "모드를 선택하세요",
-    ["💬 이유문법 설명", "🔎 구문 분석", "📚 독해 및 요약"],
-    horizontal=True,
-    key="mode_select",
-)
+# 프롬프트들
+from src.prompts import EXPLAINER_PROMPT, ANALYST_PROMPT, READER_PROMPT
+mode = st.radio("모드를 선택하세요", ["💬 이유문법 설명", "🔎 구문 분석", "📚 독해 및 요약"], horizontal=True, key="mode_select")
 
 # 입력창
 user_input = st.chat_input("질문을 입력하거나, 분석/요약할 문장이나 글을 붙여넣으세요.")
 if user_input:
-    # 유저 메시지 출력
     st.session_state.messages.append({"role": "user", "content": user_input})
-    with st.chat_message("user"):
-        st.markdown(user_input)
+    with st.chat_message("user"): st.markdown(user_input)
 
     # 프롬프트 선택
-    if mode == "💬 이유문법 설명":
-        system_prompt = EXPLAINER_PROMPT
-    elif mode == "🔎 구문 분석":
-        system_prompt = ANALYST_PROMPT
+    system_prompt = EXPLAINER_PROMPT if mode == "💬 이유문법 설명" else (ANALYST_PROMPT if mode == "🔎 구문 분석" else READER_PROMPT)
+
+    # 선택된 엔진
+    qe = st.session_state.get("qe_google" if answer_with == "Gemini" else "qe_openai")
+    if qe is None:
+        st.warning(f"{answer_with} 두뇌가 아직 준비되지 않았어요. 위에서 먼저 준비 버튼을 눌러주세요.")
     else:
-        system_prompt = READER_PROMPT
+        with st.spinner(f"{answer_with}가 답변을 생각하고 있어요..."):
+            answer = get_text_answer(qe, user_input, system_prompt)
 
-    # 답변 생성
-    with st.spinner("AI 선생님이 답변을 생각하고 있어요..."):
-        answer = get_text_answer(st.session_state.query_engine, user_input, system_prompt)
-
-    # 어시스턴트 메시지 출력
-    st.session_state.messages.append({"role": "assistant", "content": answer})
-    with st.chat_message("assistant"):
-        st.markdown(answer)
+        # 어느 AI인지 라벨링하여 출력
+        label = "🤖 Gemini" if answer_with == "Gemini" else "🤖 ChatGPT"
+        content = f"**{label}**\n\n{answer}"
+        st.session_state.messages.append({"role": "assistant", "content": content})
+        with st.chat_message("assistant"): st.markdown(content)
 
     st.rerun()
