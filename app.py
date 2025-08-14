@@ -6,6 +6,7 @@ import os
 import time
 import uuid
 import re
+import json          # ← 추가
 import pandas as pd
 import streamlit as st
 
@@ -414,20 +415,33 @@ def _log_try(items):
     if not ss.save_logs:
         return
     try:
-        # 상위 데이터 폴더(ID) → chat_log/ 서브폴더 ID로 변환
+        # 상위 데이터 폴더(ID)
         parent_id = (getattr(settings, "CHATLOG_FOLDER_ID", None) or settings.GDRIVE_FOLDER_ID)
+
+        # 서비스계정 JSON: str or dict 모두 허용 → dict로 정규화
+        sa = settings.GDRIVE_SERVICE_ACCOUNT_JSON
+        if isinstance(sa, str):
+            try:
+                sa = json.loads(sa)
+            except Exception:
+                pass  # (dict가 아니면 아래에서 에러가 나며 메시지를 보여줌)
+
+        # chat_log 서브폴더 ID 보장 생성
         sub_id = get_chatlog_folder_id(
             parent_folder_id=parent_id,
-            sa_json=settings.GDRIVE_SERVICE_ACCOUNT_JSON,
+            sa_json=sa,
         )
+
+        # JSONL을 chat_log/에 저장
         chat_store.append_jsonl(
-            folder_id=sub_id,  # ✅ 이제 서브폴더에 JSONL 저장
-            sa_json=settings.GDRIVE_SERVICE_ACCOUNT_JSON,
+            folder_id=sub_id,
+            sa_json=sa,
             items=items,
         )
         st.toast("대화 로그 저장 완료", icon="💾")
     except Exception as e:
         st.caption(f"⚠️ 대화 로그 저장 실패: {e}")
+
 
 # ===== 입력창 & 처리 =====
 user_input = st.chat_input("질문을 입력하거나, 분석/요약할 문장이나 글을 붙여넣으세요.")
