@@ -1,11 +1,19 @@
 # src/rag_engine.py — RAG 유틸(임베딩 1회 + LLM 2개) + 취소(캔슬) 지원
+#                     + tqdm 콘솔 진행바 억제(연결 리셋/로그 스팸 방지)
 
 from __future__ import annotations
 import os, json, shutil, re
 from typing import Callable, Any, Mapping
 
+# 🔇 tqdm(콘솔 진행바) 억제 — Streamlit Cloud 로그 스팸/워커부하 완화
+os.environ.setdefault("TQDM_DISABLE", "1")
+
 import streamlit as st
 from src.config import settings
+
+# (선택) llama_index 로그 억제 — 과도한 디버그 출력 방지
+import logging
+logging.getLogger("llama_index").setLevel(logging.WARNING)
 
 # 취소 신호용 예외
 class CancelledError(Exception):
@@ -264,7 +272,8 @@ def _build_index_with_progress(update_pct: Callable[[int, str | None], None],
         raise CancelledError("사용자 취소(인덱스 생성 전)")
 
     try:
-        index = VectorStoreIndex.from_documents(documents, show_progress=True)
+        # ✅ tqdm 콘솔 진행바 끄기: show_progress=False
+        index = VectorStoreIndex.from_documents(documents, show_progress=False)
     except Exception as e:
         st.error("인덱스 생성 중 오류가 발생했습니다.")
         with st.expander("자세한 오류 보기", expanded=True):
