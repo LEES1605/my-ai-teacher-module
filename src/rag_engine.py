@@ -8,10 +8,10 @@ from datetime import datetime
 from typing import Callable, Any, Mapping, Iterable
 
 import streamlit as st
-from src.config import settings
+from src.config import settings, APP_DATA_DIR  # ← APP_DATA_DIR 직접 import
 
 # ====== 공통 경로 (config의 APP_DATA_DIR 사용) ======
-DATA_DIR = Path(str(settings.APP_DATA_DIR))
+DATA_DIR = Path(str(APP_DATA_DIR))          # ← settings.APP_DATA_DIR 대신 모듈 상수 사용
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 TRACE_PATH = DATA_DIR / "indexing_trace.log"
 REPORT_PATH = DATA_DIR / "indexing_report.json"
@@ -22,7 +22,6 @@ class CancelledError(Exception):
 
 # ============================ 로깅 유틸 ==============================
 def _trace(msg: str) -> None:
-    """인덱싱 중 단계/스킵 등 텍스트를 파일에 남김(앱이 죽어도 확인 가능)."""
     try:
         with open(TRACE_PATH, "a", encoding="utf-8") as f:
             f.write(f"[{datetime.now().isoformat(sep=' ', timespec='seconds')}] {msg}\n")
@@ -61,7 +60,6 @@ def make_llm(provider: str, api_key: str, model: str, temperature: float = 0.0):
     else:
         raise ValueError(f"Unknown llm provider: {provider}")
 
-# LLM 무검색(직접 완성)
 def llm_complete(llm, prompt: str, temperature: float = 0.0) -> str:
     try:
         resp = llm.complete(prompt)
@@ -89,7 +87,6 @@ def _fetch_drive_manifest(
     root_folder_id: str,
     exclude_folder_names: Iterable[str] | None = None,
 ) -> dict:
-    """공유드라이브 포함 재귀 스냅샷. exclude_folder_names는 재귀 진입 제외(예: chat_log)."""
     svc = _build_drive_service(creds_dict)
     exclude_l = set([x.strip().lower() for x in (exclude_folder_names or [])])
 
@@ -118,8 +115,7 @@ def _fetch_drive_manifest(
     all_files, queue, seen = [], [root_folder_id], set()
     while queue:
         fid = queue.pop(0)
-        if fid in seen:
-            continue
+        if fid in seen: continue
         seen.add(fid)
 
         files, folders = list_children(fid)
@@ -206,7 +202,6 @@ def _save_signature(persist_dir: str, sig: dict) -> None:
         json.dump(sig, f, ensure_ascii=False, indent=2)
 
 def _insert_docs(index, docs):
-    """LlamaIndex 버전차 호환 (insert / insert_documents)"""
     try:
         index.insert(docs)
     except Exception:
@@ -223,10 +218,6 @@ def _build_index_with_progress(
     max_docs: int | None = None,
     is_cancelled: Callable[[], bool] | None = None,
 ):
-    """
-    파일 단위 증분 삽입 + (주기적) persist + 체크포인트 기록 → 도중 종료/리런에도 이어서.
-    exclude_folder_names: 예) ["chat_log"]
-    """
     from llama_index.core import VectorStoreIndex
     from llama_index.readers.google import GoogleDriveReader
 
