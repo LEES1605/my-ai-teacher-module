@@ -7,14 +7,14 @@ google-api-python-client
 google-auth
 google-auth-httplib2
 
-# --- LlamaIndex (모듈식) ---
-llama-index-core
-llama-index-llms-gemini
-llama-index-embeddings-google
-llama-index-readers-google
+# --- LlamaIndex (버전 호환 세트; core 0.12.x 라인) ---
+llama-index-core==0.12.52
+llama-index-llms-gemini==0.4.10
+llama-index-embeddings-google==0.3.1
+llama-index-readers-google==0.6.1
 
-# --- Google GenAI SDK (버전 중요) ---
-google-generativeai>=0.8.4
+# --- Google GenAI SDK (이 세트에 맞는 범위) ---
+google-generativeai==0.5.2
 
-# --- 호환 문제 방지 ---
+# --- 호환 이슈 예방 ---
 protobuf<5
