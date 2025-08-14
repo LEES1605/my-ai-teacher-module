@@ -10,7 +10,8 @@ import pandas as pd
 import streamlit as st
 
 # Google Drive Markdown 로그 저장 유틸
-from src.drive_log import save_chatlog_markdown
+from src.drive_log import save_chatlog_markdown, get_chatlog_folder_id
+
 # 기본 UI
 from src.ui import load_css, render_header
 
@@ -394,13 +395,19 @@ def _build_context_for_models(messages: list[dict], limit_pairs: int = 2, max_ch
     return ctx
 # ==================================================================
 
-# 공통: JSONL 로그 저장(실패해도 앱 중단 X)
+# 공통: JSONL 로그 저장(실패해도 앱 중단 X) — chat_log/ 서브폴더에 저장
 def _log_try(items):
     if not ss.save_logs:
         return
     try:
+        # 상위 데이터 폴더(ID) → chat_log/ 서브폴더 ID로 변환
+        parent_id = (getattr(settings, "CHATLOG_FOLDER_ID", None) or settings.GDRIVE_FOLDER_ID)
+        sub_id = get_chatlog_folder_id(
+            parent_folder_id=parent_id,
+            sa_json=settings.GDRIVE_SERVICE_ACCOUNT_JSON,
+        )
         chat_store.append_jsonl(
-            folder_id=CHAT_FOLDER_ID,
+            folder_id=sub_id,  # ✅ 이제 서브폴더에 JSONL 저장
             sa_json=settings.GDRIVE_SERVICE_ACCOUNT_JSON,
             items=items,
         )
