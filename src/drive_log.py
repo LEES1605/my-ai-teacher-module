@@ -1,136 +1,108 @@
 # src/drive_log.py
-# -----------------------------------------------------------
-# 대화를 Google Drive에 저장하는 유틸리티
-# - 상위 폴더: 전달받은 parent_folder_id (없으면 settings.GDRIVE_FOLDER_ID)
-# - 하위 폴더: chat_log (없으면 생성)
-# - 파일명: YYYYMMDD_session-<session_id>.md
-# - Shared Drive 대응: supportsAllDrives/includeItemsFromAllDrives 활용
-# -----------------------------------------------------------
-
 from __future__ import annotations
+from typing import Any, Mapping
+from datetime import datetime
 
-import io
-import json
-from datetime import datetime, timezone
-from typing import Any, Iterable
-
-from google.oauth2.service_account import Credentials
+# Google Drive API
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseUpload
+from google.oauth2 import service_account
 
-from src.config import settings
+# Streamlit (토스트/메시지 용, 실패해도 동작하도록 선택적 사용)
+try:
+    import streamlit as st
+except Exception:
+    st = None
 
-SCOPES_WRITE = ["https://www.googleapis.com/auth/drive.file"]
-MIME_FOLDER = "application/vnd.google-apps.folder"
+CHAT_SUBFOLDER_NAME = "chat_log"
 
-def _load_creds_write() -> Credentials:
-    raw = settings.GDRIVE_SERVICE_ACCOUNT_JSON
-    info = json.loads(raw) if isinstance(raw, str) else dict(raw)
-    return Credentials.from_service_account_info(info, scopes=SCOPES_WRITE)
+def _build_service(sa_json: Mapping[str, Any]) -> Any:
+    scopes = ["https://www.googleapis.com/auth/drive"]
+    creds = service_account.Credentials.from_service_account_info(sa_json, scopes=scopes)
+    return build("drive", "v3", credentials=creds, cache_discovery=False)
 
-def _drive():
-    # cache_discovery=False: Streamlit Cloud 캐시 이슈 회피
-    return build("drive", "v3", credentials=_load_creds_write(), cache_discovery=False)
-
-def _ensure_subfolder(parent_id: str, name: str) -> str:
-    svc = _drive()
+def _ensure_subfolder(service, parent_folder_id: str, name: str) -> str:
+    # 같은 이름 폴더가 있으면 그걸 쓰고, 없으면 생성
     q = (
-        f"mimeType='{MIME_FOLDER}' and name='{name}' "
-        f"and '{parent_id}' in parents and trashed=false"
+        f"('{parent_folder_id}' in parents) and "
+        f"name = '{name}' and "
+        f"mimeType = 'application/vnd.google-apps.folder' and trashed=false"
     )
-    res = svc.files().list(
-        q=q, fields="files(id, name)", pageSize=1,
-        includeItemsFromAllDrives=True, supportsAllDrives=True
+    res = service.files().list(
+        q=q,
+        fields="files(id,name)",
+        includeItemsFromAllDrives=True,
+        supportsAllDrives=True,
+        pageSize=10,
     ).execute()
     files = res.get("files", [])
     if files:
         return files[0]["id"]
 
-    meta = {"name": name, "mimeType": MIME_FOLDER, "parents": [parent_id]}
-    folder = svc.files().create(
-        body=meta, fields="id", supportsAllDrives=True
+    meta = {
+        "name": name,
+        "mimeType": "application/vnd.google-apps.folder",
+        "parents": [parent_folder_id],
+    }
+    created = service.files().create(
+        body=meta,
+        fields="id",
+        supportsAllDrives=True,
     ).execute()
-    return folder["id"]
+    return created["id"]
 
-def _find_file(parent_id: str, name: str) -> str | None:
-    svc = _drive()
-    q = (
-        f"name='{name}' and '{parent_id}' in parents and "
-        f"mimeType!='{MIME_FOLDER}' and trashed=false"
-    )
-    res = svc.files().list(
-        q=q, fields="files(id, name)", pageSize=1,
-        includeItemsFromAllDrives=True, supportsAllDrives=True
-    ).execute()
-    files = res.get("files", [])
-    return files[0]["id"] if files else None
+def get_chatlog_folder_id(parent_folder_id: str, sa_json: Mapping[str, Any]) -> str:
+    """상위 데이터 폴더 아래에 chat_log/ 서브폴더를 보장 생성하고 그 ID를 반환."""
+    svc = _build_service(sa_json)
+    return _ensure_subfolder(svc, parent_folder_id, CHAT_SUBFOLDER_NAME)
 
-def _create_file(parent_id: str, name: str, content: bytes, mime: str) -> str:
-    svc = _drive()
-    meta = {"name": name, "parents": [parent_id]}
-    media = MediaIoBaseUpload(io.BytesIO(content), mimetype=mime, resumable=False)
-    file = svc.files().create(
-        body=meta, media_body=media, fields="id",
-        supportsAllDrives=True
-    ).execute()
-    return file["id"]
+def save_chatlog_markdown(session_id: str, messages: list[dict], parent_folder_id: str, sa_json: Mapping[str, Any] | None = None):
+    """
+    대화 전체를 Markdown으로 저장.
+    - parent_folder_id 아래에 chat_log/ 서브폴더를 보장 생성
+    - 파일명: YYYY-MM-DD__{session_id}.md
+    """
+    if sa_json is None:
+        raise ValueError("save_chatlog_markdown: service account json 필요")
 
-def _update_file(file_id: str, content: bytes, mime: str) -> None:
-    svc = _drive()
-    media = MediaIoBaseUpload(io.BytesIO(content), mimetype=mime, resumable=False)
-    svc.files().update(
-        fileId=file_id, media_body=media, supportsAllDrives=True
-    ).execute()
+    svc = _build_service(sa_json)
+    sub_id = _ensure_subfolder(svc, parent_folder_id, CHAT_SUBFOLDER_NAME)
 
-def _to_markdown(session_id: str, messages: Iterable[dict[str, Any]]) -> str:
-    now = datetime.now(timezone.utc).astimezone()  # 로컬 타임존 표시
-    head = [
-        f"# Chat Log — {now:%Y-%m-%d %H:%M:%S %Z}",
-        f"- session_id: `{session_id}`",
-        "",
-        "---",
-        "",
-    ]
-    lines: list[str] = head
+    date_str = datetime.utcnow().strftime("%Y-%m-%d")
+    filename = f"{date_str}__{session_id}.md"
+
+    # Markdown 조립 (아주 단순)
+    lines = ["# Chat Log", f"- session: `{session_id}`", ""]
     for m in messages:
-        role = m.get("role", "assistant")
-        content = str(m.get("content", "")).rstrip()
-        title = "👤 User" if role == "user" else "🤖 Assistant"
-        lines.append(f"### {title}")
+        role = m.get("role", "")
+        content = str(m.get("content", "")).strip()
+        lines.append(f"## {role}")
+        lines.append(content)
         lines.append("")
-        lines.append(content if content else "_(empty)_")
-        lines.append("")
-    return "\n".join(lines).strip() + "\n"
+    data = "\n".join(lines).encode("utf-8")
 
-def save_chatlog_markdown(
-    session_id: str,
-    messages: Iterable[dict[str, Any]],
-    parent_folder_id: str | None = None,
-) -> str:
-    """
-    현재 세션 대화 전체를 chat_log/<YYYYMMDD_session-...>.md 로 저장/업데이트.
-    반환값: 파일 ID
-    """
-    parent_root = (parent_folder_id or
-                   getattr(settings, "CHATLOG_FOLDER_ID", "") or
-                   settings.GDRIVE_FOLDER_ID)
-    if not parent_root:
-        raise RuntimeError("GDRIVE_FOLDER_ID/CHATLOG_FOLDER_ID가 비어 있습니다.")
+    media = {"mimeType": "text/markdown"}
+    file_metadata = {"name": filename, "parents": [sub_id]}
+    svc.files().create(
+        body=file_metadata,
+        media_body=None,
+        fields="id",
+        supportsAllDrives=True,
+    ).execute()
 
-    # 하위 폴더 chat_log 보장
-    chatlog_folder_id = _ensure_subfolder(parent_root, "chat_log")
+    # 실제 콘텐츠 업로드 (resumable 말고 간단 업로드)
+    upload = svc.files().create(
+        body={"name": filename, "parents": [sub_id]},
+        media_body=None,
+        fields="id",
+        supportsAllDrives=True,
+    )
+    # 위에서 본문 없이 만들었으면, 간단히 update로 컨텐츠 업로드
+    # 간단화를 위해 아래처럼 한 번 더 호출해도 무방 (드라이브는 이름 중복 허용)
+    svc.files().create(
+        body={"name": filename, "parents": [sub_id]},
+        media_body=data,
+        fields="id",
+        supportsAllDrives=True,
+    ).execute()
 
-    # 파일명 (하루에 한 파일)
-    today = datetime.now(timezone.utc).astimezone().strftime("%Y%m%d")
-    fname = f"{today}_session-{session_id}.md"
-
-    md = _to_markdown(session_id, messages)
-    data = md.encode("utf-8")
-    mime = "text/markdown"
-
-    file_id = _find_file(chatlog_folder_id, fname)
-    if file_id:
-        _update_file(file_id, data, mime)
-        return file_id
-    else:
-        return _create_file(chatlog_folder_id, fname, data, mime)
+    if st: st.toast("Drive에 Markdown 대화 저장 완료 (chat_log/)", icon="💾")
