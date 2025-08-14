@@ -1,5 +1,6 @@
 # src/rag_engine.py — RAG 유틸(임베딩 1회 + LLM 2개) + 취소 지원 + 재개(Resume) 체크포인트
 #                     콘솔 진행바 억제(TQDM_DISABLE), 부분 persist, 변경 감지(매니페스트)
+#                     ✅ 첫 실행/비정상 저장소에서 FileNotFound 자동 복구
 
 from __future__ import annotations
 import os, json, shutil, re, hashlib
@@ -240,9 +241,28 @@ def _clear_ckpt(persist_dir: str) -> None:
 
 @st.cache_resource(show_spinner=False)
 def _load_index_from_disk(persist_dir: str):
+    """저장된 인덱스를 로드. 실패 시 깨끗한 저장소로 자동 초기화."""
     from llama_index.core import StorageContext, load_index_from_storage
-    storage_context = StorageContext.from_defaults(persist_dir=persist_dir)
-    return load_index_from_storage(storage_context)
+    try:
+        storage_context = StorageContext.from_defaults(persist_dir=persist_dir)
+        return load_index_from_storage(storage_context)
+    except Exception:
+        # ✅ 폴백: 비어있는 저장소를 초기화하여 이후 재생성/삽입이 가능하게 한다.
+        return _ensure_index_initialized(persist_dir)
+
+def _ensure_index_initialized(persist_dir: str):
+    """
+    ✅ 빈 인덱스를 메모리에 만들고, 해당 persist_dir로 최초 persist하여
+    docstore.json 등 기본 파일을 생성한다. (첫 실행/깨진 저장소 자동 복구)
+    """
+    from llama_index.core import StorageContext, VectorStoreIndex
+    os.makedirs(persist_dir, exist_ok=True)
+    # 빈 인덱스를 '메모리' 컨텍스트에서 만들고…
+    storage_context = StorageContext.from_defaults()
+    index = VectorStoreIndex.from_documents([], storage_context=storage_context)
+    # …지정한 경로로 최초 persist(필수 파일 생성)
+    index.storage_context.persist(persist_dir=persist_dir)
+    return index
 
 def _iter_drive_file_ids(manifest: dict) -> Iterable[str]:
     """파일 ID를 최신순으로 정렬해서 반환(큰 파일/최근 파일부터 처리 효과)"""
@@ -255,15 +275,7 @@ def _iter_drive_file_ids(manifest: dict) -> Iterable[str]:
 
 def _load_one_document_by_id(loader, file_id: str) -> list:
     """GoogleDriveReader에서 특정 파일만 로드 (리턴: Document 리스트)"""
-    # API를 여러 번 치더라도 재개를 위해 '한 파일씩' 안전하게 처리
     return loader.load_data(file_ids=[file_id])
-
-def _ensure_index_initialized(persist_dir: str):
-    """저장소가 없으면 빈 인덱스를 초기화해 둡니다 (이후 insert_nodes 사용)"""
-    from llama_index.core import StorageContext, VectorStoreIndex
-    storage_context = StorageContext.from_defaults(persist_dir=persist_dir)
-    # 빈 인덱스를 일단 만들어 구조를 초기화
-    return VectorStoreIndex.from_documents([], storage_context=storage_context)
 
 def _build_or_resume_with_progress(update_pct: Callable[[int, str | None], None],
                                    update_msg: Callable[[str], None],
@@ -280,7 +292,6 @@ def _build_or_resume_with_progress(update_pct: Callable[[int, str | None], None]
     """
     from llama_index.readers.google import GoogleDriveReader
     from llama_index.core.node_parser import SentenceSplitter
-    from llama_index.core import VectorStoreIndex
 
     # 0) 리더 초기화
     update_pct(10, "Drive 리더 초기화")
@@ -295,14 +306,10 @@ def _build_or_resume_with_progress(update_pct: Callable[[int, str | None], None]
             st.exception(e)
         st.stop()
 
-    # 1) 인덱스 초기화/로드
-    #    - 저장소가 있다면 로드, 없으면 빈 인덱스 생성
+    # 1) 인덱스 초기화/로드 (없으면 생성 후 persist)
     try:
         if os.path.exists(persist_dir):
-            try:
-                index = _load_index_from_disk(persist_dir)
-            except Exception:
-                index = _ensure_index_initialized(persist_dir)
+            index = _load_index_from_disk(persist_dir)
         else:
             index = _ensure_index_initialized(persist_dir)
     except Exception as e:
@@ -316,7 +323,6 @@ def _build_or_resume_with_progress(update_pct: Callable[[int, str | None], None]
     ckpt = _load_ckpt(persist_dir) or {}
     done_ids: set[str] = set(ckpt.get("done_ids", [])) if ckpt.get("target_hash") == target_hash else set()
     if ckpt.get("target_hash") != target_hash:
-        # 다른 스냅샷이면 새로운 타깃으로 초기화
         ckpt = {"target_hash": target_hash, "done_ids": []}
         _save_ckpt(persist_dir, ckpt)
 
@@ -326,19 +332,12 @@ def _build_or_resume_with_progress(update_pct: Callable[[int, str | None], None]
         all_ids = all_ids[:max_docs]
     todo_ids = [fid for fid in all_ids if fid not in done_ids]
     total = len(all_ids)
-    done = len(done_ids)
 
-    update_msg(f"체크포인트 로드: 완료 {done}/{total}개 — 재개 준비")
-    # 진행률은 30→90 구간을 문서 처리 비율로 매핑
-    def _progress_for(i_done: int) -> int:
-        if total == 0:
-            return 90
-        frac = min(1.0, max(0.0, i_done / total))
-        return 30 + int(60 * frac)
+    update_msg(f"체크포인트 로드: 완료 {len(done_ids)}/{total}개 — 재개 준비")
 
     # 4) 문서별 처리 루프
     splitter = SentenceSplitter(chunk_size=1024, chunk_overlap=128)
-    for i, fid in enumerate(todo_ids, start=1):
+    for fid in todo_ids:
         if is_cancelled and is_cancelled():
             raise CancelledError("사용자 취소(문서 처리 중)")
 
@@ -350,37 +349,32 @@ def _build_or_resume_with_progress(update_pct: Callable[[int, str | None], None]
             docs = _load_one_document_by_id(loader, fid)
         except Exception as e:
             st.warning(f"문서 로드 실패({fname}): {e}")
-            # 실패해도 다음 문서 진행
             continue
 
-        # 노드화 → 인덱스 삽입 → persist → 체크포인트 갱신
         try:
             nodes = splitter.get_nodes_from_documents(docs)
             index.insert_nodes(nodes)
-            # 부분 persist (중단돼도 지금까지는 저장됨)
-            index.storage_context.persist(persist_dir=persist_dir)
-            # 체크포인트 갱신
+            index.storage_context.persist(persist_dir=persist_dir)  # 부분 저장
             done_ids.add(fid)
             _save_ckpt(persist_dir, {"target_hash": target_hash, "done_ids": sorted(done_ids)})
         except Exception as e:
             st.warning(f"인덱싱 실패({fname}): {e}")
             continue
 
-        # 진행률 업데이트(단조 증가)
+        # 진행률(30~90 구간 매핑)
         cur_done = len(done_ids)
-        update_pct(_progress_for(cur_done), f"진행 {cur_done}/{total} — {fname}")
+        if total > 0:
+            pct = 30 + int(60 * (cur_done / total))
+        else:
+            pct = 90
+        update_pct(pct, f"진행 {cur_done}/{total} — {fname}")
 
     # 5) 완료 정리
     update_pct(95, "정리/검증…")
-    # 마지막 한 번 더 persist
     try:
         index.storage_context.persist(persist_dir=persist_dir)
     except Exception as e:
         st.warning(f"최종 저장 경고: {e}")
-
-    # 체크포인트는 유지해도 되지만, 성공적으로 끝났다면 지워도 OK
-    # (선택) 깨끗한 상태를 원하면 주석 해제:
-    # _clear_ckpt(persist_dir)
 
     update_pct(100, "완료")
     return index
@@ -411,7 +405,7 @@ def get_or_build_index(update_pct: Callable[[int, str | None], None],
         update_pct(100, "완료!")
         return idx
 
-    # 2) 변경이 있지만, 같은 스냅샷(target_hash)으로 진행 중이던 체크포인트가 있으면 '재개'
+    # 2) 변경이 있지만, 같은 스냅샷(target_hash)으로 진행 중 체크포인트가 있으면 '재개'
     ckpt = _load_ckpt(persist_dir)
     if ckpt and ckpt.get("target_hash") == target_hash and os.path.exists(persist_dir):
         update_pct(20, "변경 감지 → 미완료 체크포인트 발견 → 재개")
@@ -419,7 +413,6 @@ def get_or_build_index(update_pct: Callable[[int, str | None], None],
             update_pct, update_msg, gdrive_folder_id, gcp_creds, persist_dir, remote,
             max_docs=max_docs, is_cancelled=is_cancelled
         )
-        # 원격 스냅샷을 로컬 매니페스트로 저장(완료 시점)
         _save_local_manifest(manifest_path, remote)
         update_pct(100, "완료!")
         return idx
