@@ -6,6 +6,8 @@ from collections.abc import Mapping
 from src.rag_engine import smoke_test_drive, preview_drive_files
 from src.ui import load_css, render_header
 from src.rag_engine import smoke_test_drive
+import pandas as pd  # ← 추가
+
 
 st.set_page_config(
     page_title="나의 AI 영어 교사",
@@ -34,7 +36,18 @@ with col1:
         ok, msg, rows = preview_drive_files(max_items=10)
         if ok:
             if rows:
-                st.dataframe(rows, use_container_width=True, height=360)
+                # ← 교체된 부분 시작
+                df = pd.DataFrame(rows)[["name", "mime", "modified", "link"]]
+                st.dataframe(
+                    df,
+                    use_container_width=True,
+                    height=360,
+                    column_config={
+                        "link": st.column_config.LinkColumn("open", display_text="열기")
+                    },
+                    hide_index=True,
+                )
+                # ← 교체된 부분 끝
             else:
                 st.warning("폴더에 파일이 없거나 접근할 수 없습니다.")
         else:
