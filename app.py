@@ -137,7 +137,18 @@ st.subheader("🧠 두뇌 준비 (실전) & 대화")
 
 # 필요한 엔진/설정 유틸들
 from src.config import settings  # ← import 단순화 (상수는 settings.*로 접근)
-from src.rag_engine import init_llama_settings, get_or_build_index, get_text_answer
+
+# ✅ 진단용: rag_engine 임포트 실패 시 상세 오류 표시
+try:
+    from src.rag_engine import init_llama_settings, get_or_build_index, get_text_answer
+except Exception:
+    st.error("`src.rag_engine` 임포트(LLM/RAG 유틸) 단계에서 오류가 발생했습니다.")
+    import os, traceback
+    st.write("파일 존재 여부:", os.path.exists("src/rag_engine.py"))
+    with st.expander("임포트 스택(원인)", expanded=True):
+        st.code(traceback.format_exc())
+    st.stop()
+
 from src.prompts import EXPLAINER_PROMPT, ANALYST_PROMPT, READER_PROMPT
 
 # 진행 표시용 공통 함수(시뮬레이션과 동일 UI)
