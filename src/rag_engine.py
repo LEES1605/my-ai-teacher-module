@@ -1,4 +1,4 @@
-# src/rag_engine.py — RAG 엔진 유틸 + Google Drive 테스트 + 공급자별 LLM/임베딩 설정
+# src/rag_engine.py — RAG 유틸(임베딩 1회 + LLM 2개 전략)
 
 from __future__ import annotations
 import os, json, shutil, re
@@ -8,61 +8,8 @@ import streamlit as st
 from src.config import settings
 
 # ============================================================================
-# 1) LLM/임베딩 설정 (공급자별)
+# 0) 공통: 서비스계정 JSON 정규화 + Drive 서비스
 # ============================================================================
-
-def init_llama_settings(
-    provider: str,
-    api_key: str,
-    llm_model: str,
-    embed_model: str,
-    temperature: float = 0.0,
-):
-    """
-    공급자에 따라 LlamaIndex Settings에 임베딩을 설정하고,
-    사용할 LLM 객체를 반환합니다. (QueryEngine에 llm=...로 주입해 고정 사용)
-    - provider: "google" | "openai"
-    """
-    from llama_index.core import Settings
-
-    provider = (provider or "google").lower()
-    try:
-        if provider == "openai":
-            from llama_index.llms.openai import OpenAI as _LLM
-            from llama_index.embeddings.openai import OpenAIEmbedding as _EMB
-
-            # OpenAI: 임베딩은 Settings에 설정, LLM 객체는 반환
-            Settings.embed_model = _EMB(model=embed_model, api_key=api_key)
-            llm = _LLM(model=llm_model, api_key=api_key, temperature=temperature)
-
-        else:
-            # 기본: Google GenAI
-            from llama_index.llms.google_genai import GoogleGenAI as _LLM
-            from llama_index.embeddings.google_genai import GoogleGenAIEmbedding as _EMB
-
-            Settings.embed_model = _EMB(model_name=embed_model, api_key=api_key)
-            llm = _LLM(model=llm_model, api_key=api_key, temperature=temperature)
-
-        # 임베딩 스모크 테스트 (키/모델/네트워크 확인)
-        _ = Settings.embed_model.get_text_embedding("ping")
-        return llm
-
-    except Exception as e:
-        st.error("LLM/임베딩 초기화 실패 — 키/모델/패키지 설치를 확인하세요.")
-        with st.expander("자세한 오류 보기", expanded=True):
-            st.exception(e)
-        st.stop()
-
-# ============================================================================
-# 2) Google Drive 연결 테스트/미리보기
-# ============================================================================
-
-def _build_drive_service(creds_dict):
-    from google.oauth2 import service_account
-    from googleapiclient.discovery import build
-    scopes = ["https://www.googleapis.com/auth/drive.readonly"]
-    creds = service_account.Credentials.from_service_account_info(creds_dict, scopes=scopes)
-    return build("drive", "v3", credentials=creds, cache_discovery=False)
 
 def _normalize_sa(raw_sa: Any | None) -> Mapping[str, Any] | None:
     """
@@ -80,14 +27,11 @@ def _normalize_sa(raw_sa: Any | None) -> Mapping[str, Any] | None:
         s = raw_sa.strip()
         if not s:
             return None
-        # 1차 시도
         try:
             return json.loads(s)
         except Exception:
             pass
-        # private_key 보정
         try:
-            import re
             m = re.search(r'"private_key"\s*:\s*"(?P<key>.*?)"', s, re.DOTALL)
             if m:
                 key = m.group("key")
@@ -97,6 +41,63 @@ def _normalize_sa(raw_sa: Any | None) -> Mapping[str, Any] | None:
         except Exception:
             pass
     return None
+
+def _build_drive_service(creds_dict):
+    from google.oauth2 import service_account
+    from googleapiclient.discovery import build
+    scopes = ["https://www.googleapis.com/auth/drive.readonly"]
+    creds = service_account.Credentials.from_service_account_info(creds_dict, scopes=scopes)
+    return build("drive", "v3", credentials=creds, cache_discovery=False)
+
+# ============================================================================
+# 1) 임베딩/LLM 초기화 (임베딩 1회, LLM은 필요 수만큼)
+# ============================================================================
+
+def set_embed_provider(provider: str, api_key: str, embed_model: str):
+    """
+    임베딩 공급자만 지정해 LlamaIndex Settings.embed_model 을 설정한다.
+    (인덱스 생성은 이 설정을 사용)
+    """
+    from llama_index.core import Settings
+    p = (provider or "google").lower()
+    try:
+        if p == "openai":
+            from llama_index.embeddings.openai import OpenAIEmbedding as _EMB
+            Settings.embed_model = _EMB(model=embed_model, api_key=api_key)
+        else:
+            from llama_index.embeddings.google_genai import GoogleGenAIEmbedding as _EMB
+            Settings.embed_model = _EMB(model_name=embed_model, api_key=api_key)
+
+        # 스모크 테스트
+        _ = Settings.embed_model.get_text_embedding("ping")
+    except Exception as e:
+        st.error("임베딩 초기화 실패 — 키/모델/패키지 설치를 확인하세요.")
+        with st.expander("자세한 오류 보기", expanded=True):
+            st.exception(e)
+        st.stop()
+
+def make_llm(provider: str, api_key: str, llm_model: str, temperature: float = 0.0):
+    """
+    요청된 공급자의 LLM 인스턴스만 만들어 반환 (Settings는 건드리지 않음).
+    같은 인덱스에 서로 다른 LLM을 붙여 사용할 때 쓴다.
+    """
+    p = (provider or "google").lower()
+    try:
+        if p == "openai":
+            from llama_index.llms.openai import OpenAI as _LLM
+            return _LLM(model=llm_model, api_key=api_key, temperature=temperature)
+        else:
+            from llama_index.llms.google_genai import GoogleGenAI as _LLM
+            return _LLM(model=llm_model, api_key=api_key, temperature=temperature)
+    except Exception as e:
+        st.error(f"{provider} LLM 초기화 실패 — 키/모델을 확인하세요.")
+        with st.expander("자세한 오류 보기", expanded=True):
+            st.exception(e)
+        st.stop()
+
+# ============================================================================
+# 2) Drive 테스트/미리보기
+# ============================================================================
 
 def smoke_test_drive() -> tuple[bool, str]:
     folder_id = settings.GDRIVE_FOLDER_ID
@@ -133,14 +134,12 @@ def preview_drive_files(max_items: int = 10) -> tuple[bool, str, list[dict]]:
             includeItemsFromAllDrives=True,
         ).execute()
         files = resp.get("files", [])
-        rows = []
-        for f in files:
-            rows.append({
-                "name": f.get("name"),
-                "link": f"https://drive.google.com/file/d/{f.get('id')}/view",
-                "mime": f.get("mimeType"),
-                "modified": f.get("modifiedTime"),
-            })
+        rows = [{
+            "name": f.get("name"),
+            "link": f"https://drive.google.com/file/d/{f.get('id')}/view",
+            "mime": f.get("mimeType"),
+            "modified": f.get("modifiedTime"),
+        } for f in files]
         return (True, f"{len(rows)}개 파일", rows)
     except Exception as e:
         return (False, f"목록 조회 실패: {e}", [])
@@ -202,6 +201,7 @@ def _manifests_differ(local: dict | None, remote: dict) -> bool:
             return True
     return False
 
+@st.cache_resource(show_spinner=False)
 def _load_index_from_disk(persist_dir: str):
     from llama_index.core import StorageContext, load_index_from_storage
     storage_context = StorageContext.from_defaults(persist_dir=persist_dir)
@@ -211,7 +211,8 @@ def _build_index_with_progress(update_pct: Callable[[int, str | None], None],
                                update_msg: Callable[[str], None],
                                gdrive_folder_id: str,
                                gcp_creds: Mapping[str, Any],
-                               persist_dir: str):
+                               persist_dir: str,
+                               max_docs: int | None = None):
     from llama_index.core import VectorStoreIndex
     from llama_index.readers.google import GoogleDriveReader
 
@@ -221,13 +222,12 @@ def _build_index_with_progress(update_pct: Callable[[int, str | None], None],
         st.stop()
 
     update_pct(15, "Drive 리더 초기화")
-    # 신/구 버전 모두 호환: 신형(service_account_key) → 실패 시 구형(gcp_creds_dict)
     try:
-        loader = GoogleDriveReader(service_account_key=gcp_creds)
+        loader = GoogleDriveReader(service_account_key=gcp_creds)   # 신형 API
     except TypeError:
-        loader = GoogleDriveReader(gcp_creds_dict=gcp_creds)
+        loader = GoogleDriveReader(gcp_creds_dict=gcp_creds)        # 구형 호환
 
-    update_pct(30, "문서 목록 불러오는 중")
+    update_pct(30, "문서 로드 중…")
     try:
         documents = loader.load_data(folder_id=gdrive_folder_id)
     except Exception as e:
@@ -236,11 +236,12 @@ def _build_index_with_progress(update_pct: Callable[[int, str | None], None],
             st.exception(e)
         st.stop()
 
-    if not documents:
-        st.error("강의 자료 폴더가 비었거나 권한 문제입니다. folder_id/공유권한을 확인하세요.")
-        st.stop()
+    # 빠른 모드: 개수 제한
+    if max_docs and len(documents) > max_docs:
+        documents = documents[:max_docs]
+        update_msg(f"빠른 모드: 처음 {max_docs}개 문서만 인덱싱")
 
-    update_pct(60, f"문서 {len(documents)}개 로드 → 인덱스 생성")
+    update_pct(60, f"문서 {len(documents)}개 → 인덱스 생성")
     try:
         index = VectorStoreIndex.from_documents(documents, show_progress=True)
     except Exception as e:
@@ -266,7 +267,8 @@ def get_or_build_index(update_pct: Callable[[int, str | None], None],
                        gdrive_folder_id: str,
                        raw_sa: Any | None,
                        persist_dir: str,
-                       manifest_path: str):
+                       manifest_path: str,
+                       max_docs: int | None = None):
     gcp_creds = _normalize_sa(raw_sa)
     if not gcp_creds:
         st.error("서비스계정 JSON 파싱에 실패했습니다.")
@@ -285,8 +287,8 @@ def get_or_build_index(update_pct: Callable[[int, str | None], None],
     if os.path.exists(persist_dir):
         shutil.rmtree(persist_dir)
 
-    update_pct(40, "변경 감지 → 문서 로드/인덱스 생성")
-    idx = _build_index_with_progress(update_pct, update_msg, gdrive_folder_id, gcp_creds, persist_dir)
+    update_pct(40, "변경 감지 → 인덱스 생성")
+    idx = _build_index_with_progress(update_pct, update_msg, gdrive_folder_id, gcp_creds, persist_dir, max_docs=max_docs)
 
     _save_local_manifest(manifest_path, remote)
     update_pct(100, "완료!")
