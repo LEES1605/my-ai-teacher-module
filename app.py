@@ -127,13 +127,18 @@ def run_prepare_both():
         st.session_state.prep_both_running = False
         st.stop()
 
-    # 4) 인덱스 로딩/빌드 (공통 1회)
+        # 4) 인덱스 로딩/빌드 (공통 1회)
     try:
         prog = {"pct": 10}
         def upd(pct: int, msg: str | None = None):
-            prog["pct"] = int(pct)
+            # 👇 단조증가 강제: 이전 값보다 작게 오면 무시(클램프)
+            new_pct = int(pct)
+            if new_pct < prog["pct"]:
+                new_pct = prog["pct"]
+            prog["pct"] = new_pct
             _render_progress(g_bar, g_msg, prog["pct"], msg)
             _render_progress(o_bar, o_msg, prog["pct"], msg)
+
         def umsg(m: str):
             _render_progress(g_bar, g_msg, prog["pct"], m)
             _render_progress(o_bar, o_msg, prog["pct"], m)
