@@ -52,6 +52,17 @@ def preview_drive_files(max_items=10):
     try:
         creds = _load_creds()
         service = build("drive", "v3", credentials=creds)
+        # ✅ 60초 캐시: 목록 가져오기 (preview_drive_files 내부, service 생성 "바로 아래"에 추가)
+        @st.cache_data(ttl=60)
+        def _list_files_cached(fid: str, max_items: int, cache_key: str):
+            return service.files().list(
+                q=f"'{fid}' in parents and trashed=false",
+                fields="files(id,name,mimeType,modifiedTime,webViewLink)",
+                pageSize=max_items,
+                supportsAllDrives=True,
+                includeItemsFromAllDrives=True,
+                corpora="allDrives",
+            ).execute().get("files", [])
 
         # 필수 시크릿 확인
         if "GDRIVE_FOLDER_ID" not in st.secrets or not str(st.secrets["GDRIVE_FOLDER_ID"]).strip():
