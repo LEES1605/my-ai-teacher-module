@@ -8,7 +8,8 @@ from typing import Any, Mapping
 # ========== 앱 런타임 산출물 경로 (인덱스/캐시 등) ==========
 # 우선순위: 환경변수 AI_TEACHER_DATA_DIR → 프로젝트/.data/my_ai_teacher
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
-_DATA_ROOT = Path(os.getenv("AI_TEACHER_DATA_DIR", _PROJECT_ROOT / ".data" / "my_ai_teacher"))
+# 숨김(.data) 대신 공개 data/ 경로로 변경
+_DATA_ROOT = Path(os.getenv("AI_TEACHER_DATA_DIR", _PROJECT_ROOT / "data" / "my_ai_teacher"))
 _DATA_ROOT.mkdir(parents=True, exist_ok=True)
 
 APP_DATA_DIR = _DATA_ROOT
