@@ -97,7 +97,12 @@ def run_app():
         if ok:
             _ = st.success(msg)   # 반환 객체를 변수에 담아 버리면 추가 렌더링이 발생하지 않음
         else:
-            _ = st.warning(msg)
+    from pathlib import Path
+    from src.config import APP_DATA_DIR
+    with st.expander("🔧 데이터 폴더 확인", expanded=False):
+        st.code(str(APP_DATA_DIR))
+        try: st.write([p.name for p in Path(APP_DATA_DIR).iterdir()])
+        except Exception as e: st.write(e)
 
     # ===== 두뇌 준비 (공통 인덱스 + LLM 2개) =====
     st.markdown("----")
