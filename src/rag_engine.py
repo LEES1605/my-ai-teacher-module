@@ -202,10 +202,45 @@ def _save_signature(persist_dir: str, sig: dict) -> None:
         json.dump(sig, f, ensure_ascii=False, indent=2)
 
 def _insert_docs(index, docs):
+    """
+    LlamaIndex v0.12.x 기준:
+    VectorStoreIndex 에 문서를 증분 삽입할 때는
+    Document -> Node 로 파싱 후 insert_nodes() 를 사용합니다.
+    예전 버전 호환(fallback)도 함께 처리했습니다.
+    """
     try:
-        index.insert(docs)
-    except Exception:
+        # 1) Document -> Node
+        from llama_index.core.node_parser import SentenceSplitter
+        parser = SentenceSplitter(chunk_size=1200, chunk_overlap=100)
+        nodes = parser.get_nodes_from_documents(docs)
+
+        # 2) 권장 API (0.12.x)
+        index.insert_nodes(nodes)
+        return
+    except AttributeError:
+        # insert_nodes 가 없는 구버전 대비
+        pass
+    except Exception as e:
+        # 다른 오류면 아래 fallback 로 시도
+        _trace(f"insert_nodes failed, fallback to legacy: {e}")
+
+    # ---- 구버전 호환 (가능하면 자동 파싱해 주는 insert) ----
+    try:
+        index.insert(docs)  # 일부 버전엔 이게 작동
+        return
+    except AttributeError:
+        # 진짜 구버전만 존재
+        pass
+    except Exception as e:
+        _trace(f"legacy insert failed: {e}")
+
+    # ---- 최후 fallback: insert_documents (극구버전) ----
+    try:
         index.insert_documents(docs)
+    except Exception as e:
+        # 더 진행 불가 → 원인 노출
+        raise RuntimeError(f"증분 삽입 실패: insert_nodes/insert/insert_documents 모두 불가 — {e}")
+
 
 # ============================ 인덱스 빌드 =============================
 def _build_index_with_progress(
