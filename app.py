@@ -11,6 +11,38 @@ import re
 import json
 import pandas as pd
 import streamlit as st
+# ---- Streamlit query_params 호환 패치 (deprecation 배너 제거) ----
+# old -> st.experimental_get_query_params / st.experimental_set_query_params
+# new -> st.query_params
+if not hasattr(st, "_qp_compat_patched"):
+    def _compat_get_query_params():
+        """옛 반환형(dict[str, list[str]]) 유지"""
+        try:
+            raw = dict(st.query_params)      # {'key': 'v'} 또는 {'key': ['a','b']}
+            return {k: (v if isinstance(v, list) else [v]) for k, v in raw.items()}
+        except Exception:
+            return {}
+
+    def _compat_set_query_params(**kwargs):
+        """
+        사용법 호환:
+          - st.experimental_set_query_params()             -> 전부 비움
+          - st.experimental_set_query_params(a="1", b="2") -> 설정
+          - 리스트도 허용: st.experimental_set_query_params(tags=["a","b"])
+        """
+        try:
+            qp = st.query_params
+            qp.clear()
+            for k, v in kwargs.items():
+                qp[k] = v
+        except Exception:
+            pass
+
+    # monkey-patch
+    st.experimental_get_query_params = _compat_get_query_params
+    st.experimental_set_query_params = _compat_set_query_params
+    st._qp_compat_patched = True
+# ---------------------------------------------------------------
 
 # 기본 UI
 from src.ui import load_css, render_header
