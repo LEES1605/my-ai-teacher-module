@@ -106,3 +106,46 @@ def save_chatlog_markdown(session_id: str, messages: list[dict], parent_folder_i
     ).execute()
 
     if st: st.toast("Drive에 Markdown 대화 저장 완료 (chat_log/)", icon="💾")
+# src/drive_log.py - 하단에 추가
+
+from googleapiclient.http import MediaInMemoryUpload
+
+def _ensure_folder(svc, name: str, parent_id: str | None = None) -> str:
+    q = f"name='{name}' and mimeType='application/vnd.google-apps.folder' and trashed=false"
+    if parent_id:
+        q += f" and '{parent_id}' in parents"
+    res = svc.files().list(q=q, fields="files(id,name)").execute()
+    if res.get("files"):
+        return res["files"][0]["id"]
+    meta = {"name": name, "mimeType": "application/vnd.google-apps.folder"}
+    if parent_id:
+        meta["parents"] = [parent_id]
+    f = svc.files().create(body=meta, fields="id").execute()
+    return f["id"]
+
+def _messages_to_markdown(session_id: str, messages: list[dict]) -> str:
+    lines = [f"# Chat session {session_id}"]
+    for m in messages:
+        role = m.get("role", "user")
+        lines.append(f"\n## {role}\n\n{m.get('content','')}")
+    return "\n".join(lines).strip() + "\n"
+
+def save_chatlog_markdown_oauth(session_id: str, messages: list[dict], svc, parent_folder_id: str | None = None) -> str:
+    """OAuth(사용자 소유)로 MD 저장. 반환: 파일 ID"""
+    if not svc:
+        raise RuntimeError("Drive service is None")
+
+    # 상위 폴더 결정: 지정 없으면 my-ai-teacher-data/chat_log 생성
+    root_id = parent_folder_id or _ensure_folder(svc, "my-ai-teacher-data")
+    chat_id = _ensure_folder(svc, "chat_log", root_id)
+
+    from datetime import datetime, timezone, timedelta
+    KST = timezone(timedelta(hours=9))
+    stamp = datetime.now(KST).strftime("%Y-%m-%d__%H%M%S")
+    filename = f"{stamp}.md"
+
+    md = _messages_to_markdown(session_id, messages).encode("utf-8")
+    media = MediaInMemoryUpload(md, mimetype="text/markdown", resumable=False)
+    meta = {"name": filename, "parents": [chat_id]}
+    f = svc.files().create(body=meta, media_body=media, fields="id").execute()
+    return f["id"]
