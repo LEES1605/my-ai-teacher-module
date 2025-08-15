@@ -91,7 +91,8 @@ with col1:
             st.error(msg)
 with col2:
     ok, msg = smoke_test_drive()
-    st.success(msg) if ok else st.warning(msg)
+    _ = st.success(msg) if ok else st.warning(msg)   # 반환값을 무시
+
 
 # ===== (선택) 인덱싱 보고서 표시 =====
 rep = st.session_state.get("indexing_report")
