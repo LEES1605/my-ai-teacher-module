@@ -15,7 +15,20 @@ import streamlit as st
 from src.ui import load_css, render_header
 
 # Drive 로그 유틸
-from src.drive_log import save_chatlog_markdown, get_chatlog_folder_id
+from src.drive_log import save_chatlog_markdown_oauth
+
+if ss.auto_save_chatlog and ss.messages:
+    try:
+        if is_signed_in():
+            svc = build_drive_service()
+            parent_id = (st.secrets.get("OAUTH_CHAT_PARENT_ID") or "").strip() or None
+            _fid = save_chatlog_markdown_oauth(ss.session_id, ss.messages, svc, parent_id)
+            st.toast("내 드라이브에 대화 저장 완료 ✅", icon="💾")
+        else:
+            st.info("구글 계정으로 로그인하면 대화가 **내 드라이브**에 저장됩니다.")
+    except Exception as e:
+        st.warning(f"OAuth 저장 실패: {e}")
+
 
 # 설정
 from src.config import settings
@@ -44,6 +57,8 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="collapsed",
 )
+from src.google_oauth import finish_oauth_if_redirected
+finish_oauth_if_redirected()
 
 # ===== 세션 상태 =====
 ss = st.session_state
@@ -68,6 +83,25 @@ st.info("✅ 인덱싱은 변경이 있을 때만 다시 수행합니다. 저장
 with st.sidebar:
     ss.auto_save_chatlog = st.toggle("대화 자동 저장(Drive/Markdown)", value=ss.auto_save_chatlog)
     ss.save_logs = st.toggle("대화 JSONL 저장(Drive/chat_log/)", value=ss.save_logs)
+
+from src.google_oauth import start_oauth, is_signed_in, build_drive_service, get_user_email, sign_out
+
+with st.sidebar:
+    ss.auto_save_chatlog = st.toggle("대화 자동 저장(Drive)", value=ss.auto_save_chatlog)
+
+    st.markdown("---")
+    st.markdown("### Google 로그인 (내 드라이브 저장)")
+
+    if not is_signed_in():
+        if st.button("🔐 Google로 로그인"):
+            url = start_oauth()
+            st.markdown(f"[여기를 눌러 로그인하세요]({url})")
+    else:
+        st.success(f"로그인됨: {get_user_email() or '알 수 없음'}")
+        if st.button("로그아웃"):
+            sign_out()
+            st.experimental_rerun()
+
 
 # ===== Google Drive 연결 테스트 =====
 st.markdown("## 🔗 Google Drive 연결 테스트")
