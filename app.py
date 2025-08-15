@@ -233,7 +233,9 @@ def run_prepare_both_step():
 
     # 2) 인덱스 스텝 진행
     def upd(p, m=None):
-        _render_progress(g_bar, g_msg, p, m); _render_progress(o_bar, o_msg, p, m)
+        ss.p_shared = int(p)  # ← 진행률을 세션에 보존
+        _render_progress(g_bar, g_msg, p, m)
+        _render_progress(o_bar, o_msg, p, m)
 
     def umsg(m):
         _render_progress(g_bar, g_msg, ss.get("p_shared", 0), m)
