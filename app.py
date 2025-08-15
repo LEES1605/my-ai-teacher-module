@@ -1,6 +1,7 @@
 # app.py — 스텝 인덱싱(중간취소/재개) + 두뇌준비 안정화
-#        + 인덱싱 보고서(스킵 파일 표시) + Drive 대화로그(JSONL/Markdown, chat_log/ 저장)
-#        + 대화 페르소나(친절한 Gemini, 유머러스한 ChatGPT)
+#        + 인덱싱 보고서(스킵 파일 표시)
+#        + Drive 대화로그 저장(❶ OAuth: Markdown / ❷ 서비스계정: JSONL, chat_log/)
+#        + 페르소나: 🤖Gemini(친절/꼼꼼), 🤖ChatGPT(유머러스/보완)
 
 # ===== Imports =====
 import os
@@ -11,36 +12,26 @@ import json
 import pandas as pd
 import streamlit as st
 
-# UI
+# 기본 UI
 from src.ui import load_css, render_header
-
-# Drive 로그 유틸
-from src.drive_log import save_chatlog_markdown_oauth
-
-if ss.auto_save_chatlog and ss.messages:
-    try:
-        if is_signed_in():
-            svc = build_drive_service()
-            parent_id = (st.secrets.get("OAUTH_CHAT_PARENT_ID") or "").strip() or None
-            _fid = save_chatlog_markdown_oauth(ss.session_id, ss.messages, svc, parent_id)
-            st.toast("내 드라이브에 대화 저장 완료 ✅", icon="💾")
-        else:
-            st.info("구글 계정으로 로그인하면 대화가 **내 드라이브**에 저장됩니다.")
-    except Exception as e:
-        st.warning(f"OAuth 저장 실패: {e}")
-
 
 # 설정
 from src.config import settings
 
-# RAG/인덱싱 유틸 (스텝 빌더 사용)
+# RAG/인덱싱 유틸(스텝 빌더)
 from src.rag_engine import (
     set_embed_provider, make_llm, get_text_answer, CancelledError,
-    start_index_builder, resume_index_builder, cancel_index_builder, get_index_progress
+    start_index_builder, resume_index_builder, cancel_index_builder
 )
 
-# JSONL 로그 스토어
+# JSONL 로그 스토어(서비스계정 경로)
 from src import chat_store
+
+# Drive 로그 유틸
+# ❶ OAuth로 Markdown 저장
+from src.drive_log import save_chatlog_markdown_oauth
+# ❷ 서비스계정으로 JSONL 저장 시 chat_log/ 보장
+from src.drive_log import get_chatlog_folder_id
 
 # 페르소나 프롬프트
 from src.prompts import EXPLAINER_PROMPT, ANALYST_PROMPT, READER_PROMPT
@@ -51,47 +42,46 @@ os.environ["STREAMLIT_SERVER_FILE_WATCHER_TYPE"] = "none"
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 os.environ["STREAMLIT_SERVER_ENABLE_WEBSOCKET_COMPRESSION"] = "false"
 
-# ===== 페이지 설정 (첫 호출만) =====
+# ===== 페이지 설정 (첫 호출만!) =====
 st.set_page_config(
     page_title="나의 AI 영어 교사",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
+
+# OAuth 리다이렉트 처리는 페이지 설정 직후
 from src.google_oauth import finish_oauth_if_redirected
 finish_oauth_if_redirected()
 
-# ===== 세션 상태 =====
+# ===== 세션 상태(먼저 정의! 이후에 ss 참조) =====
 ss = st.session_state
-ss.setdefault("session_id", uuid.uuid4().hex[:12])      # 대화 세션 ID
-ss.setdefault("messages", [])                           # {"role": "user"|"assistant", "content": str}
-ss.setdefault("auto_save_chatlog", True)                # Markdown 자동 저장
-ss.setdefault("save_logs", True)                        # JSONL 저장 ON/OFF
+ss.setdefault("session_id", uuid.uuid4().hex[:12])   # 대화 세션 ID
+ss.setdefault("messages", [])                        # {"role": "user"|"assistant", "content": str}
+ss.setdefault("auto_save_chatlog", True)             # OAuth Markdown 자동 저장
+ss.setdefault("save_logs", False)                    # 서비스계정 JSONL 저장(기본 False; 쿼터 이슈 회피)
 ss.setdefault("prep_both_running", False)
 ss.setdefault("prep_both_done", ("qe_google" in ss) or ("qe_openai" in ss))
 ss.setdefault("p_shared", 0)
 ss.setdefault("prep_cancel_requested", False)
 ss.setdefault("session_terminated", False)
-ss.setdefault("index_job", None)                        # 스텝 빌더 상태
-
+ss.setdefault("index_job", None)                     # 스텝 빌더 상태
+ss.setdefault("fast", True)
+ss.setdefault("max_docs", 40)
 
 # ===== 기본 UI / 헤더 =====
 load_css()
 render_header()
-st.info("✅ 인덱싱은 변경이 있을 때만 다시 수행합니다. 저장된 두뇌가 있으면 즉시 불러옵니다. (중간 취소/재개 가능)")
+st.info("✅ 변경이 있을 때만 인덱싱합니다. 저장된 두뇌가 있으면 즉시 불러옵니다. (중간 취소/재개 지원)")
 
-# ===== 사이드바 =====
-with st.sidebar:
-    ss.auto_save_chatlog = st.toggle("대화 자동 저장(Drive/Markdown)", value=ss.auto_save_chatlog)
-    ss.save_logs = st.toggle("대화 JSONL 저장(Drive/chat_log/)", value=ss.save_logs)
-
+# ===== 사이드바: 자동저장 토글 + OAuth 로그인 =====
 from src.google_oauth import start_oauth, is_signed_in, build_drive_service, get_user_email, sign_out
 
 with st.sidebar:
-    ss.auto_save_chatlog = st.toggle("대화 자동 저장(Drive)", value=ss.auto_save_chatlog)
-
+    ss.auto_save_chatlog = st.toggle("대화 자동 저장 (OAuth/내 드라이브, Markdown)", value=ss.auto_save_chatlog)
+    ss.save_logs = st.toggle("대화 JSONL 저장 (서비스계정/chat_log/)", value=ss.save_logs,
+                             help="공유드라이브 Writer 권한 필요. 쿼터 문제 시 끄기 권장.")
     st.markdown("---")
     st.markdown("### Google 로그인 (내 드라이브 저장)")
-
     if not is_signed_in():
         if st.button("🔐 Google로 로그인"):
             url = start_oauth()
@@ -100,12 +90,11 @@ with st.sidebar:
         st.success(f"로그인됨: {get_user_email() or '알 수 없음'}")
         if st.button("로그아웃"):
             sign_out()
-            st.experimental_rerun()
-
+            st.rerun()
 
 # ===== Google Drive 연결 테스트 =====
 st.markdown("## 🔗 Google Drive 연결 테스트")
-st.caption("서비스계정에 **공유 드라이브(Shared Drive)**의 폴더에 대해 Writer 권한이 있어야 저장이 됩니다.")
+st.caption("서비스계정은 **공유 드라이브**에 Writer 권한이 있어야(저장 시) 오류 없이 동작합니다. 인덱싱은 Readonly면 충분.")
 
 try:
     from src.rag_engine import smoke_test_drive, preview_drive_files
@@ -165,23 +154,17 @@ st.subheader("🧠 두뇌 준비 — 저장본 로드 ↔ 변경 시 증분 인�
 
 # 옵션
 with st.expander("⚙️ 옵션", expanded=False):
-    ss.fast = st.checkbox(
-        "⚡ 빠른 준비 (처음 N개 문서만 인덱싱)", value=ss.get("fast", True),
-        disabled=ss.prep_both_running or ss.prep_both_done
-    )
-    ss.max_docs = st.number_input(
-        "N (빠른 모드일 때만)", min_value=5, max_value=500, value=int(ss.get("max_docs", 40)), step=5,
-        disabled=ss.prep_both_running or ss.prep_both_done
-    )
+    ss.fast = st.checkbox("⚡ 빠른 준비 (처음 N개 문서만 인덱싱)", value=ss.fast,
+                          disabled=ss.prep_both_running or ss.prep_both_done)
+    ss.max_docs = st.number_input("N (빠른 모드일 때만)", min_value=5, max_value=500, value=int(ss.max_docs), step=5,
+                                  disabled=ss.prep_both_running or ss.prep_both_done)
 
 # 진행률 바
 c_g, c_o = st.columns(2)
 with c_g:
-    st.caption("Gemini 진행")
-    g_bar = st.empty(); g_msg = st.empty()
+    st.caption("Gemini 진행"); g_bar = st.empty(); g_msg = st.empty()
 with c_o:
-    st.caption("ChatGPT 진행")
-    o_bar = st.empty(); o_msg = st.empty()
+    st.caption("ChatGPT 진행"); o_bar = st.empty(); o_msg = st.empty()
 
 def _render_progress(slot_bar, slot_msg, pct: int, msg: str | None = None):
     p = max(0, min(100, int(pct)))
@@ -196,7 +179,6 @@ def _render_progress(slot_bar, slot_msg, pct: int, msg: str | None = None):
 def _is_cancelled() -> bool:
     return bool(ss.get("prep_cancel_requested", False))
 
-# 스텝 러너
 def run_prepare_both_step():
     # 1) 임베딩 공급자 선택/설정
     embed_provider = "openai"
@@ -207,7 +189,6 @@ def run_prepare_both_step():
         embed_provider = "google"
         embed_api = settings.GEMINI_API_KEY.get_secret_value()
         embed_model = getattr(settings, "EMBED_MODEL", "text-embedding-004")
-
     try:
         _render_progress(g_bar, g_msg, 3, f"임베딩 설정({embed_provider})")
         _render_progress(o_bar, o_msg, 3, f"임베딩 설정({embed_provider})")
@@ -220,11 +201,9 @@ def run_prepare_both_step():
 
     # 2) 인덱스 스텝 진행
     def upd(p, m=None):
-        _render_progress(g_bar, g_msg, p, m)
-        _render_progress(o_bar, o_msg, p, m)
+        _render_progress(g_bar, g_msg, p, m); _render_progress(o_bar, o_msg, p, m)
 
     def umsg(m):
-        # 메시지는 현재 퍼센트 유지
         _render_progress(g_bar, g_msg, ss.get("p_shared", 0), m)
         _render_progress(o_bar, o_msg, ss.get("p_shared", 0), m)
 
@@ -249,29 +228,22 @@ def run_prepare_both_step():
             ss.index_job = res["job"]
             _render_progress(g_bar, g_msg, res.get("pct", 8), res.get("msg", "진행 중…"))
             _render_progress(o_bar, o_msg, res.get("pct", 8), res.get("msg", "진행 중…"))
-            time.sleep(0.2); st.rerun()
-            return
+            time.sleep(0.2); st.rerun(); return
         else:
             _render_progress(g_bar, g_msg, 100, "인덱싱 시작 실패")
             _render_progress(o_bar, o_msg, 100, "인덱싱 시작 실패")
-            ss.prep_both_running = False
-            return
+            ss.prep_both_running = False; return
     else:
         # 재개
-        res = resume_index_builder(
-            job=job, update_pct=upd, update_msg=umsg,
-            is_cancelled=_is_cancelled, batch_size=6,
-        )
+        res = resume_index_builder(job=job, update_pct=upd, update_msg=umsg,
+                                   is_cancelled=_is_cancelled, batch_size=6)
         status = res.get("status")
         if status == "running":
             _render_progress(g_bar, g_msg, res.get("pct", 8), res.get("msg", "진행 중…"))
             _render_progress(o_bar, o_msg, res.get("pct", 8), res.get("msg", "진행 중…"))
-            time.sleep(0.15); st.rerun()
-            return
+            time.sleep(0.15); st.rerun(); return
         elif status == "cancelled":
-            ss.prep_both_running = False
-            ss.prep_cancel_requested = False
-            ss.index_job = None
+            ss.prep_both_running = False; ss.prep_cancel_requested = False; ss.index_job = None
             _render_progress(g_bar, g_msg, ss.get("p_shared", 0), "사용자 취소")
             _render_progress(o_bar, o_msg, ss.get("p_shared", 0), "사용자 취소")
             return
@@ -281,8 +253,7 @@ def run_prepare_both_step():
         else:
             _render_progress(g_bar, g_msg, 100, "인덱싱 실패")
             _render_progress(o_bar, o_msg, 100, "인덱싱 실패")
-            ss.prep_both_running = False
-            return
+            ss.prep_both_running = False; return
 
     # 3) 인덱스 준비 완료 → LLM 2개 준비 + QE 생성
     try:
@@ -351,7 +322,6 @@ if st.button("🔧 재설정(버튼 다시 활성화)", disabled=not ss.prep_bot
     ss.p_shared = 0
     st.rerun()
 
-
 # ===== 대화 UI (그룹토론) =====
 st.markdown("---")
 st.subheader("💬 그룹토론 — 학생 ↔ 🤖Gemini(친절/꼼꼼) ↔ 🤖ChatGPT(유머러스/보완)")
@@ -372,43 +342,31 @@ for m in ss.messages:
     with st.chat_message(m["role"]):
         st.markdown(m["content"])
 
-
-# ===== 유틸: 참고자료 꼬리 제거 & 맥락 구성 =====
+# 유틸: 참고자료 꼬리 제거 & 맥락 구성
 def _strip_sources(text: str) -> str:
     return re.sub(r"\n+---\n\*참고 자료:.*$", "", text, flags=re.DOTALL)
 
 def _build_context_for_models(messages: list[dict], limit_pairs: int = 2, max_chars: int = 2000) -> str:
     """최근 user/assistant 쌍을 limit_pairs개까지 모아 맥락을 만든다."""
-    pairs = []
-    buf_user = None
+    pairs, buf_user = [], None
     for m in reversed(messages):
         role, content = m.get("role"), str(m.get("content", "")).strip()
         if role == "assistant":
             content = re.sub(r"^\*\*🤖 .*?\*\*\s*\n+", "", content).strip()
             if buf_user is not None:
-                pairs.append((buf_user, content))
-                buf_user = None
-                if len(pairs) >= limit_pairs:
-                    break
-        elif role == "user":
-            if buf_user is None:
-                buf_user = content
+                pairs.append((buf_user, content)); buf_user = None
+                if len(pairs) >= limit_pairs: break
+        elif role == "user" and buf_user is None:
+            buf_user = content
     pairs = list(reversed(pairs))
-    blocks = []
-    for u, a in pairs:
-        blocks.append(f"[학생]\n{u}\n\n[교사]\n{a}")
+    blocks = [f"[학생]\n{u}\n\n[교사]\n{a}" for u, a in pairs]
     ctx = "\n\n---\n\n".join(blocks).strip()
-    if len(ctx) > max_chars:
-        ctx = ctx[-max_chars:]
-    return ctx
+    return ctx[-max_chars:] if len(ctx) > max_chars else ctx
 
-
-# ===== 페르소나 합성 =====
+# 페르소나 합성
 def _persona():
-    # 기본 모드(설명/분석/독해)
     mode = st.session_state.get("mode_select", "💬 이유문법 설명")
     base = EXPLAINER_PROMPT if mode == "💬 이유문법 설명" else (ANALYST_PROMPT if mode == "🔎 구문 분석" else READER_PROMPT)
-    # 공통 스타일
     common = (
         "역할: 학생의 영어 실력을 돕는 AI 교사.\n"
         "규칙: 근거가 불충분하면 그 사실을 명확히 밝힌다. 예시 문장은 짧고 점진적으로.\n"
@@ -419,20 +377,17 @@ GEMINI_STYLE = (
     "당신은 착하고 똑똑한 친구 같은 교사입니다. 지나치게 어렵게 말하지 말고, "
     "칭찬과 격려를 곁들여 차분히 안내하세요. 핵심 규칙은 정확성입니다."
 )
-
 CHATGPT_REVIEW_STYLE = (
     "당신은 유머러스하지만 정확한 동료 교사입니다. 동료(Gemini)의 답을 읽고 "
     "빠진 부분을 보완/교정하고, 마지막에 <최종 정리>를 제시하세요. 과한 농담은 피하고, "
     "짧고 명료한 유머 한두 줄만 허용됩니다."
 )
 
-# 모드 스위처(상단에 두기보단 대화 위젯 위에 배치)
-mode = st.radio(
-    "학습 모드", ["💬 이유문법 설명", "🔎 구문 분석", "📚 독해 및 요약"],
-    horizontal=True, key="mode_select"
-)
+# 모드 스위처
+mode = st.radio("학습 모드", ["💬 이유문법 설명", "🔎 구문 분석", "📚 독해 및 요약"],
+                horizontal=True, key="mode_select")
 
-# ===== JSONL 로그 저장 (chat_log/ 서브폴더) =====
+# JSONL 로그 저장(서비스계정, chat_log/)
 def _log_try(items):
     if not ss.save_logs:
         return
@@ -440,20 +395,17 @@ def _log_try(items):
         parent_id = (getattr(settings, "CHATLOG_FOLDER_ID", None) or settings.GDRIVE_FOLDER_ID)
         sa = settings.GDRIVE_SERVICE_ACCOUNT_JSON
         if isinstance(sa, str):
-            try:
-                sa = json.loads(sa)
-            except Exception:
-                pass
+            try: sa = json.loads(sa)
+            except Exception: pass
         sub_id = get_chatlog_folder_id(parent_folder_id=parent_id, sa_json=sa)
         chat_store.append_jsonl(folder_id=sub_id, sa_json=sa, items=items)
         st.toast("대화 JSONL 저장 완료", icon="💾")
     except Exception as e:
-        # 실패는 눈에 보이도록 error로 표시
-        st.error(f"대화 JSONL 저장 실패: {e}")
+        # 쿼터/권한 문제 등은 눈에 보이게 표시
+        st.warning(f"대화 JSONL 저장 실패: {e}")
 
 # ===== 입력창 =====
 user_input = st.chat_input("질문을 입력하거나, 분석/요약할 문장이나 글을 붙여넣으세요.")
-
 if user_input:
     # 0) 사용자 메시지
     ss.messages.append({"role": "user", "content": user_input})
@@ -483,7 +435,6 @@ if user_input:
     # 2) ChatGPT 보완/검증 — RAG 없이 LLM 직답(동료 답변 읽고 보완)
     if ready_openai:
         from src.rag_engine import llm_complete
-
         review_directive = (
             "역할: 당신은 동료 AI 영어교사입니다.\n"
             "목표: [이전 대화], [학생 질문], [동료의 1차 답변]을 읽고, 사실오류/빠진점/모호함을 교정·보완합니다.\n"
@@ -494,7 +445,6 @@ if user_input:
             "4) 마지막에 <최종 정리> 섹션으로 한눈 요약\n"
             "금지: 새로운 외부 검색/RAG. 제공된 내용과 교사 지식만 사용.\n"
         )
-
         prev_ctx_all = _build_context_for_models(ss.messages, limit_pairs=2, max_chars=2000)  # Gemini 방금 답 포함
         augmented = (
             (f"[이전 대화]\n{prev_ctx_all}\n\n" if prev_ctx_all else "") +
@@ -502,13 +452,11 @@ if user_input:
             f"[동료의 1차 답변(Gemini)]\n{_strip_sources(ans_g)}\n\n"
             f"[당신의 작업]\n위 기준으로만 보완/검증하라."
         )
-
         with st.spinner("🤝 ChatGPT 선생님이 보완/검증 중…"):
             ans_o = llm_complete(
                 ss.get("llm_openai"),
                 _persona() + "\n" + CHATGPT_REVIEW_STYLE + "\n\n" + review_directive + "\n\n" + augmented
             )
-
         content_o = f"**🤖 ChatGPT**\n\n{ans_o}"
         ss.messages.append({"role": "assistant", "content": content_o})
         with st.chat_message("assistant"):
@@ -517,24 +465,17 @@ if user_input:
         with st.chat_message("assistant"):
             st.info("ChatGPT 키가 없어 Gemini만 응답했습니다. OPENAI_API_KEY를 추가하면 보완/검증이 활성화됩니다.")
 
-    # ✅ Drive Markdown 대화 로그 자동 저장 (공유드라이브의 데이터 폴더 내 chat_log/)
+    # ❶ OAuth: Markdown 자동 저장 (내 드라이브, my-ai-teacher-data/chat_log/)
     if ss.auto_save_chatlog and ss.messages:
         try:
-            parent_id = (getattr(settings, "CHATLOG_FOLDER_ID", None) or settings.GDRIVE_FOLDER_ID)
-            sa = settings.GDRIVE_SERVICE_ACCOUNT_JSON
-            if isinstance(sa, str):
-                try:
-                    sa = json.loads(sa)
-                except Exception:
-                    pass
-            save_chatlog_markdown(
-                ss.session_id,
-                ss.messages,
-                parent_folder_id=parent_id,
-                sa_json=sa,   # 서비스계정 dict 전달 필수
-            )
-            st.toast("Drive에 대화 저장 완료 (chat_log/)", icon="💾")
+            if is_signed_in():
+                svc = build_drive_service()
+                parent_id = (st.secrets.get("OAUTH_CHAT_PARENT_ID") or "").strip() or None
+                _fid = save_chatlog_markdown_oauth(ss.session_id, ss.messages, svc, parent_id)
+                st.toast("내 드라이브에 대화 저장 완료 ✅", icon="💾")
+            else:
+                st.info("구글 계정으로 로그인하면 대화가 **내 드라이브**에 저장됩니다.")
         except Exception as e:
-            st.error(f"Drive Markdown 저장 실패: {e}")
+            st.warning(f"OAuth 저장 실패: {e}")
 
     st.rerun()
