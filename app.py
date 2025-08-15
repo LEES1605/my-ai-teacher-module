@@ -110,9 +110,153 @@ def run_app():
 
     from src.config import settings
     try:
-        from src.rag_engine import (
-            set_embed_provider, make_llm, get_or_build_index,
-            get_text_answer, CancelledError
+# 한 번에 다 돌리지 않고, 스텝으로 조금씩 처리하는 준비 루틴
+FILES_PER_TICK = 5       # 한 번에 처리할 파일 수
+LOAD_TIMEOUT_S = 35      # 파일 하나를 읽을 때 최대 대기 시간(초)
+
+def run_prepare_both():
+    _render_progress(g_bar, g_msg, ss.p_shared, "대기 중…")
+    _render_progress(o_bar, o_msg, ss.p_shared, "대기 중…")
+
+    # 1) 임베딩 공급자 결정 (빠르게 끝남)
+    embed_provider = "openai"
+    embed_api = getattr(settings, "OPENAI_API_KEY", None).get_secret_value() if hasattr(settings, "OPENAI_API_KEY") and settings.OPENAI_API_KEY else ""
+    embed_model = getattr(settings, "OPENAI_EMBED_MODEL", "text-embedding-3-small")
+    if not embed_api:
+        embed_provider = "google"
+        embed_api = settings.GEMINI_API_KEY.get_secret_value()
+        embed_model = getattr(settings, "EMBED_MODEL", "text-embedding-004")
+    persist_dir = f"{getattr(settings, 'PERSIST_DIR', '/tmp/my_ai_teacher/storage_gdrive')}_shared"
+
+    try:
+        if _is_cancelled(): raise CancelledError("사용자 취소")
+        p = _bump_max("p_shared", 5)
+        _render_progress(g_bar, g_msg, p, f"임베딩 설정({embed_provider})")
+        _render_progress(o_bar, o_msg, p, f"임베딩 설정({embed_provider})")
+        set_embed_provider(embed_provider, embed_api, embed_model)
+    except CancelledError:
+        ss.prep_both_running = False; ss.prep_cancel_requested = False
+        _render_progress(g_bar, g_msg, ss.p_shared, "사용자 취소")
+        _render_progress(o_bar, o_msg, ss.p_shared, "사용자 취소"); st.stop()
+    except Exception as e:
+        p = _bump_max("p_shared", 100)
+        _render_progress(g_bar, g_msg, p, f"임베딩 실패: {e}")
+        _render_progress(o_bar, o_msg, p, f"임베딩 실패: {e}")
+        ss.prep_both_running = False; st.stop()
+
+    # 2) IndexBuilder 생성 또는 재사용
+    try:
+        from llama_index.core import Settings  # 서명 저장용
+        gcp_creds = settings.GDRIVE_SERVICE_ACCOUNT_JSON
+        if isinstance(gcp_creds, str):
+            import json as _json
+            try: gcp_creds = _json.loads(gcp_creds)
+            except Exception: pass
+
+        if "idx_builder" not in ss:
+            # 새 빌더 시작 (chat_log 제외)
+            ss["idx_builder"] = start_index_builder(
+                gdrive_folder_id=settings.GDRIVE_FOLDER_ID,
+                gcp_creds=gcp_creds,
+                persist_dir=persist_dir,
+                exclude_folder_names=["chat_log"],
+                max_docs=(max_docs if fast else None),
+            )
+            _render_progress(g_bar, g_msg, 8, "Drive 파일 목록 불러오는 중…")
+            _render_progress(o_bar, o_msg, 8, "Drive 파일 목록 불러오는 중…")
+
+        builder = ss["idx_builder"]
+
+        # 3) 이번 틱에서 N개만 처리
+        def upd_pct(pct: int, msg: str | None = None):
+            p = _bump_max("p_shared", pct)
+            _render_progress(g_bar, g_msg, p, msg); _render_progress(o_bar, o_msg, p, msg)
+        def upd_msg(m: str):
+            p = ss.p_shared
+            _render_progress(g_bar, g_msg, p, m); _render_progress(o_bar, o_msg, p, m)
+
+        status = builder.step(
+            max_files=FILES_PER_TICK,
+            per_file_timeout_s=LOAD_TIMEOUT_S,
+            is_cancelled=_is_cancelled,
+            on_pct=upd_pct,
+            on_msg=upd_msg,
+        )
+
+        if status == "running":
+            # 다음 틱에서 이어서 하도록 즉시 리런
+            ss.prep_both_running = True
+            st.rerun()
+
+        # ----- 여기 오면 인덱싱이 끝난 것 -----
+        # 마지막 저장/리포트 기록
+        st.session_state["indexing_report"] = {
+            "total_manifest": builder.total,
+            "loaded_docs": builder.processed,
+            "skipped_count": len(builder.skipped),
+            "skipped": builder.skipped,
+        }
+        # 빌더 정리
+        ss.pop("idx_builder", None)
+
+    except CancelledError:
+        # 취소 → 빌더 정리하고 메시지 띄우고 종료
+        ss.pop("idx_builder", None)
+        ss.prep_both_running = False; ss.prep_cancel_requested = False
+        _render_progress(g_bar, g_msg, ss.p_shared, "사용자 취소")
+        _render_progress(o_bar, o_msg, ss.p_shared, "사용자 취소")
+        st.stop()
+    except Exception as e:
+        p = _bump_max("p_shared", 100)
+        _render_progress(g_bar, g_msg, p, f"인덱스 실패: {e}")
+        _render_progress(o_bar, o_msg, p, f"인덱스 실패: {e}")
+        ss.pop("idx_builder", None)
+        ss.prep_both_running = False; st.stop()
+
+    # 4) LLM 두 개 준비 (이 구간은 짧음)
+    try:
+        g_llm = make_llm("google", settings.GEMINI_API_KEY.get_secret_value(),
+                         getattr(settings, "LLM_MODEL", "gemini-1.5-pro"),
+                         float(ss.get("temperature", 0.0)))
+        ss["llm_google"] = g_llm
+        from llama_index.core import StorageContext, load_index_from_storage
+        index = _load_index_from_disk(persist_dir)  # 방금 만든 저장본 로딩
+        ss["qe_google"] = index.as_query_engine(
+            llm=g_llm,
+            response_mode=ss.get("response_mode", getattr(settings, "RESPONSE_MODE", "compact")),
+            similarity_top_k=int(ss.get("similarity_top_k", getattr(settings, "SIMILARITY_TOP_K", 5))),
+        )
+        _render_progress(g_bar, g_msg, 100, "완료!")
+    except Exception as e:
+        _render_progress(g_bar, g_msg, 100, f"Gemini 준비 실패: {e}")
+
+    try:
+        if hasattr(settings, "OPENAI_API_KEY") and settings.OPENAI_API_KEY.get_secret_value():
+            if _is_cancelled(): raise CancelledError("사용자 취소")
+            o_llm = make_llm("openai", settings.OPENAI_API_KEY.get_secret_value(),
+                             getattr(settings, "OPENAI_LLM_MODEL", "gpt-4o-mini"),
+                             float(ss.get("temperature", 0.0)))
+            ss["llm_openai"] = o_llm
+            # 같은 인덱스를 재사용
+            ss["qe_openai"] = index.as_query_engine(
+                llm=o_llm,
+                response_mode=ss.get("response_mode", getattr(settings, "RESPONSE_MODE", "compact")),
+                similarity_top_k=int(ss.get("similarity_top_k", getattr(settings, "SIMILARITY_TOP_K", 5))),
+            )
+            _render_progress(o_bar, o_msg, 100, "완료!")
+        else:
+            _render_progress(o_bar, o_msg, 100, "키 누락 — OPENAI_API_KEY 필요")
+    except CancelledError:
+        ss.prep_both_running = False; ss.prep_cancel_requested = False
+        _render_progress(o_bar, o_msg, ss.p_shared, "사용자 취소"); st.stop()
+    except Exception as e:
+        _render_progress(o_bar, o_msg, 100, f"ChatGPT 준비 실패: {e}")
+
+    # 완료 플래그
+    ss.prep_both_running = False
+    ss.prep_both_done = True
+    ss["prep_both_just_done"] = True
+
         )
     except Exception:
         st.error("`src.rag_engine` 임포트(LLM/RAG) 실패")
