@@ -175,11 +175,45 @@ def _save_signature(persist_dir: str, sig: dict) -> None:
         json.dump(sig, f, ensure_ascii=False, indent=2)
 
 def _insert_docs(index, docs):
-    """LlamaIndex 버전차 호환 (insert / insert_documents)"""
-    try:
-        index.insert(docs)
-    except Exception:
-        index.insert_documents(docs)
+    """LlamaIndex 0.12 호환: insert / insert_nodes 중 존재하는 것을 호출.
+    비어있는 문서는 조용히 스킵."""
+    if not docs:
+        return
+
+    # 문서가 비어있으면 스킵
+    cleaned = []
+    for d in docs:
+        try:
+            txt = getattr(d, "text", None)
+            if txt is None and hasattr(d, "get_text"):
+                txt = d.get_text()
+            if txt is None:
+                txt = ""
+            if str(txt).strip():
+                cleaned.append(d)
+        except Exception:
+            # 형식 이상 문서는 무시
+            pass
+    if not cleaned:
+        return
+
+    # 0.12 권장: insert(문서) 또는 insert_nodes(노드)
+    if hasattr(index, "insert"):
+        index.insert(cleaned)
+        return
+
+    if hasattr(index, "insert_nodes"):
+        # 문서 -> 노드 변환 후 삽입
+        try:
+            from llama_index.core.node_parser import SimpleNodeParser
+            nodes = SimpleNodeParser.from_defaults().get_nodes_from_documents(cleaned)
+            index.insert_nodes(nodes)
+            return
+        except Exception:
+            pass
+
+    # 더 이상 쓸 수 있는 메서드가 없음
+    raise RuntimeError("Index object has no supported insert method (insert / insert_nodes).")
 
 # ============================ 전체 빌드(단발) =============================
 def _build_index_with_progress(
