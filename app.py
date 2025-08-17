@@ -1,6 +1,6 @@
 # app.py
 # ===== TOP OF FILE ============================================================
-# 런타임/성능 관련 환경변수(없어도 되지만 안전빵)
+# 런타임/성능 관련 안전 옵션들 (없어도 동작은 하지만 권장)
 import os
 os.environ["STREAMLIT_SERVER_FILE_WATCHER_TYPE"] = "none"
 os.environ["STREAMLIT_RUN_ON_SAVE"] = "false"
@@ -26,7 +26,7 @@ from src.ui import load_css, render_header
 # 프롬프트
 from src.prompts import EXPLAINER_PROMPT, ANALYST_PROMPT, READER_PROMPT
 
-# RAG 엔진: rag_engine.py 가 내부 모듈들을 re-export 한다고 가정
+# RAG 엔진: rag_engine.py 가 내부 모듈들을 re-export
 from src.rag_engine import (
     get_or_build_index,
     init_llama_settings,
@@ -44,8 +44,8 @@ from src.rag_engine import (
 # 관리자 인증
 from src.auth import admin_login_flow
 
-# ====== 내부 헬퍼 =============================================================
 
+# ====== 내부 헬퍼 =============================================================
 def _secret_or_str(v):
     """SecretStr/str 모두 안전하게 문자열로 꺼내기."""
     try:
@@ -58,12 +58,18 @@ def _default_top_k() -> int:
     return int(getattr(settings, "SIMILARITY_TOP_K", 5))
 
 def _auto_backup_flag() -> bool:
-    """설정 키가 두 가지 케이스를 모두 지원되도록."""
+    """설정 키 이름 변경에 대비한 안전 플래그."""
     return bool(
         getattr(settings, "AUTO_BACKUP_TO_DRIVE", None)
         if getattr(settings, "AUTO_BACKUP_TO_DRIVE", None) is not None
         else getattr(settings, "AUTO_BACKUP_ON_SUCCESS", True)
     )
+
+def _has_sa_json() -> bool:
+    """서비스계정 JSON 존재 여부(필드/자동조립 포함)."""
+    val = getattr(settings, "GDRIVE_SERVICE_ACCOUNT_JSON", "") or ""
+    return bool(str(val).strip())
+
 
 # ---- 스텝 표시용 CSS/렌더러 (파일 내 자급자족) ------------------------------
 def ensure_progress_css():
@@ -114,10 +120,11 @@ def safe_render_header():
         render_header(
             "세상에서 가장 쉬운 이유문법",
             "AI 교사와 함께하는 똑똑한 학습",
-            logo_path="assets/academy_logo.png",
+            logo_path="assets/academy_logo.png",  # 로고는 assets/academy_logo.png
         )
     except Exception:
         pass
+
 
 # ====== 페이지 & 상단 공통 UI =================================================
 st.set_page_config(
@@ -143,6 +150,12 @@ with c3:
 
 # ====== 관리자 인증 ===========================================================
 is_admin = admin_login_flow(getattr(settings, "ADMIN_PASSWORD", ""))
+
+# 관리자 진단 배너(학생에게는 안 보임)
+if is_admin and not _has_sa_json():
+    st.error("GDRIVE 서비스계정 자격증명이 비었습니다. Secrets에 JSON 또는 이메일/프라이빗키를 입력해 주세요.")
+    st.caption("힌트: 템플릿의 APP_GDRIVE_SERVICE_ACCOUNT_JSON 또는 APP_SA_CLIENT_EMAIL / APP_SA_PRIVATE_KEY 를 사용하세요.")
+
 
 # ====== 자동 연결/복원 (무소음) ===============================================
 def _auto_attach_or_restore_silently() -> bool:
@@ -184,6 +197,7 @@ def _auto_attach_or_restore_silently() -> bool:
 if "query_engine" not in st.session_state:
     _auto_attach_or_restore_silently()
 
+
 # ====== 품질 리포트 뷰어 ======================================================
 def render_quality_report_view():
     st.subheader("📊 최적화 품질 리포트", divider="gray")
@@ -199,7 +213,7 @@ def render_quality_report_view():
             st.exception(e)
         return
 
-    s = rep.get("summary", {})
+    s = rep.get("summary", {}) or {}
     st.write(
         f"- 전체 문서: **{s.get('total_docs', 0)}**개  "
         f"- 처리 파일: **{s.get('processed_docs', 0)}**개  "
@@ -230,6 +244,7 @@ def render_quality_report_view():
             )
         else:
             st.caption("아직 수집된 파일 통계가 없습니다.")
+
 
 # ====== 관리자 전용 패널 ======================================================
 if is_admin:
@@ -333,6 +348,7 @@ if is_admin:
         st.write(f"• 로컬 저장 경로: `{PERSIST_DIR}` → {'존재' if os.path.isdir(PERSIST_DIR) else '없음'}")
         st.write(f"• 체크포인트: `{CHECKPOINT_PATH}` → {'존재' if os.path.exists(CHECKPOINT_PATH) else '없음'}")
         render_quality_report_view()
+
 
 # ====== 메인 워크플로우 =======================================================
 def main():
@@ -476,6 +492,7 @@ def main():
         st.info("수업 준비 중입니다. 잠시 후 선생님이 두뇌를 연결하면 자동으로 채팅이 열립니다.")
         st.caption("이 화면은 학생 전용으로, 관리자 기능과 준비 과정은 표시하지 않습니다.")
 
+
 # ====== 채팅 UI ===============================================================
 def render_chat_ui():
     if "messages" not in st.session_state:
@@ -506,6 +523,7 @@ def render_chat_ui():
             answer = get_text_answer(st.session_state.query_engine, prompt, selected_prompt)
         st.session_state.messages.append({"role": "assistant", "content": answer})
         st.rerun()
+
 
 # ====== 엔트리포인트 ==========================================================
 if __name__ == "__main__":
