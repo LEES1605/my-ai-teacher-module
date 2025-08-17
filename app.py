@@ -234,67 +234,71 @@ with st.expander("📤 관리자: 자료 업로드 (원본→prepared 저장)", 
                 return m.group(1)
         return None
 
-    # ── AI 제목 생성기(LLM + 휴리스틱) ────────────────────────────────────────────
-    from src.rag_engine import make_llm, llm_complete
+# ── AI 제목 생성기(LLM + 휴리스틱) ────────────────────────────────────────────
+from src.rag_engine import make_llm, llm_complete
 
-    _title_model = None  # lazy init
-    def _get_title_model():
-        """OpenAI 있으면 OpenAI, 없으면 Gemini, 둘 다 없으면 None"""
-        nonlocal _title_model
-        if _title_model is not None:
-            return _title_model
-        try:
-            from src.config import settings
-            if getattr(settings, "OPENAI_API_KEY", None) and settings.OPENAI_API_KEY.get_secret_value():
-                _title_model = make_llm("openai",
-                                        settings.OPENAI_API_KEY.get_secret_value(),
-                                        getattr(settings, "OPENAI_LLM_MODEL", "gpt-4o-mini"),
-                                        0.2)
-                return _title_model
-            _title_model = make_llm("google",
-                                    settings.GEMINI_API_KEY.get_secret_value(),
-                                    getattr(settings, "LLM_MODEL", "gemini-1.5-pro"),
-                                    0.2)
-            return _title_model
-        except Exception:
-            return None
-
-    def _heuristic_title(orig_base: str, hint: str = "") -> str:
-        """확장자 제거된 원래 이름 + 힌트를 깔끔히 정리해 40자 내로"""
-        import re
-        base = orig_base
-        base = re.sub(r"\.[^.]+$", "", base)            # .ext 제거
-        base = re.sub(r"^\d{8}_\d{6}__", "", base)      # 앞에 붙인 타임스탬프 패턴 제거
-        base = base.replace("_", " ").replace("-", " ")
-        base = re.sub(r"\s+", " ", base).strip()
-        if hint:
-            base = f"{hint.strip()} — {base}" if base else hint.strip()
-        return (base[:40]).strip() or "untitled"
-
-    def _ai_title(orig_base: str, sample_text: str = "", hint: str = "") -> str:
-        """LLM으로 짧은 한국어 제목 생성(최대 40자). 실패 시 휴리스틱."""
-        model = _get_title_model()
-        if model is None:
-            return _heuristic_title(orig_base, hint)
-
-        prompt = (
-            "다음 파일의 제목을 한국어로 간결하게 만들어 주세요. 규칙:\n"
-            "1) 최대 40자, 2) 불필요한 숫자/확장자 제거, 3) 핵심 키워드 위주, 4) 따옴표/괄호 남발 금지,\n"
-            "5) 문장형 말투보다 명사구 선호, 6) 출력은 제목만(부가 설명/따옴표 X).\n\n"
-            f"[파일명 힌트]\n{orig_base}\n\n"
+def _get_title_model():
+    """OpenAI 있으면 OpenAI, 없으면 Gemini, 둘 다 없으면 None"""
+    global _TITLE_MODEL                      # ← nonlocal 대신 global 사용
+    if _TITLE_MODEL is not None:
+        return _TITLE_MODEL
+    try:
+        from src.config import settings
+        if getattr(settings, "OPENAI_API_KEY", None) and settings.OPENAI_API_KEY.get_secret_value():
+            _TITLE_MODEL = make_llm(
+                "openai",
+                settings.OPENAI_API_KEY.get_secret_value(),
+                getattr(settings, "OPENAI_LLM_MODEL", "gpt-4o-mini"),
+                0.2,
+            )
+            return _TITLE_MODEL
+        # OpenAI 키 없으면 Gemini로
+        _TITLE_MODEL = make_llm(
+            "google",
+            settings.GEMINI_API_KEY.get_secret_value(),
+            getattr(settings, "LLM_MODEL", "gemini-1.5-pro"),
+            0.2,
         )
-        if hint:
-            prompt += f"[추가 힌트]\n{hint}\n\n"
-        if sample_text:
-            prompt += f"[본문 일부]\n{sample_text[:1200]}\n\n"
+        return _TITLE_MODEL
+    except Exception:
+        return None
 
-        try:
-            title = llm_complete(model, prompt).strip()
-            # 안전화
-            title = _safe_name(title)
-            return (title[:40]).strip() or _heuristic_title(orig_base, hint)
-        except Exception:
-            return _heuristic_title(orig_base, hint)
+def _heuristic_title(orig_base: str, hint: str = "") -> str:
+    """확장자 제거된 원래 이름 + 힌트를 깔끔히 정리해 40자 내로"""
+    import re
+    base = orig_base
+    base = re.sub(r"\.[^.]+$", "", base)            # .ext 제거
+    base = re.sub(r"^\d{8}_\d{6}__", "", base)      # 타임스탬프 패턴 제거
+    base = base.replace("_", " ").replace("-", " ")
+    base = re.sub(r"\s+", " ", base).strip()
+    if hint:
+        base = f"{hint.strip()} — {base}" if base else hint.strip()
+    return (base[:40]).strip() or "untitled"
+
+def _ai_title(orig_base: str, sample_text: str = "", hint: str = "") -> str:
+    """LLM으로 짧은 한국어 제목 생성(최대 40자). 실패 시 휴리스틱."""
+    model = _get_title_model()
+    if model is None:
+        return _heuristic_title(orig_base, hint)
+
+    prompt = (
+        "다음 파일의 제목을 한국어로 간결하게 만들어 주세요. 규칙:\n"
+        "1) 최대 40자, 2) 불필요한 숫자/확장자 제거, 3) 핵심 키워드 위주, 4) 따옴표/괄호 남발 금지,\n"
+        "5) 문장형 말투보다 명사구 선호, 6) 출력은 제목만(부가 설명/따옴표 X).\n\n"
+        f"[파일명 힌트]\n{orig_base}\n\n"
+    )
+    if hint:
+        prompt += f"[추가 힌트]\n{hint}\n\n"
+    if sample_text:
+        prompt += f"[본문 일부]\n{sample_text[:1200]}\n\n"
+
+    try:
+        title = llm_complete(model, prompt).strip()
+        # 안전화 (아래 _safe_name은 같은 섹션에 이미 정의되어 있어야 합니다)
+        title = _safe_name(title)
+        return (title[:40]).strip() or _heuristic_title(orig_base, hint)
+    except Exception:
+        return _heuristic_title(orig_base, hint)
 
     # ── 업로드/가져오기 실행 ─────────────────────────────────────────────────────
     if st.button("업로드/가져오기 → prepared", type="primary"):
