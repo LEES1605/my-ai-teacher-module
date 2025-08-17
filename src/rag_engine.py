@@ -4,18 +4,15 @@ import os, json, shutil
 from typing import Callable, Any, Mapping
 
 import streamlit as st
-from src.config import settings  # 설정 접근(브랜드/모델 등)
+from src.config import settings
 
 # === LLM/Embedding 설정(지연 초기화) ==========================================
 def init_llama_settings(api_key: str, llm_model: str, embed_model: str, temperature: float = 0.0):
-    """LlamaIndex Settings를 지연 초기화하고, 임베딩 스모크 테스트로 키/네트워크를 점검."""
     from llama_index.core import Settings
     from llama_index.embeddings.google_genai import GoogleGenAIEmbedding
     from llama_index.llms.google_genai import GoogleGenAI
-
     Settings.llm = GoogleGenAI(model=llm_model, api_key=api_key, temperature=temperature)
     Settings.embed_model = GoogleGenAIEmbedding(model_name=embed_model, api_key=api_key)
-
     try:
         _ = Settings.embed_model.get_text_embedding("ping")
     except Exception as e:
@@ -27,21 +24,19 @@ def init_llama_settings(api_key: str, llm_model: str, embed_model: str, temperat
 # === 인덱스 로딩/빌드 ==========================================================
 @st.cache_resource(show_spinner=False)
 def _load_index_from_disk(persist_dir: str):
-    """디스크에 저장된 인덱스를 읽어옵니다."""
     from llama_index.core import StorageContext, load_index_from_storage
     storage_context = StorageContext.from_defaults(persist_dir=persist_dir)
     index = load_index_from_storage(storage_context)
     return index
 
-def _build_drive_service(creds_dict):
+def _build_drive_service(creds_dict: Mapping[str, Any]):
     from google.oauth2 import service_account
     from googleapiclient.discovery import build
     scopes = ["https://www.googleapis.com/auth/drive.readonly"]
-    creds = service_account.Credentials.from_service_account_info(creds_dict, scopes=scopes)
+    creds = service_account.Credentials.from_service_account_info(dict(creds_dict), scopes=scopes)
     return build("drive", "v3", credentials=creds, cache_discovery=False)
 
-def _fetch_drive_manifest(creds_dict, folder_id: str) -> dict:
-    """드라이브 폴더 내 파일들의 '스냅샷(매니페스트)'를 가져옵니다."""
+def _fetch_drive_manifest(creds_dict: Mapping[str, Any], folder_id: str) -> dict:
     svc = _build_drive_service(creds_dict)
     files = []
     page_token = None
@@ -66,62 +61,66 @@ def _fetch_drive_manifest(creds_dict, folder_id: str) -> dict:
         } for f in files
     }
 
-def _load_local_manifest(path: str) -> dict | None:
-    if os.path.exists(path):
-        try:
-            with open(path, "r", encoding="utf-8") as fp:
-                return json.load(fp)
-        except Exception:
-            return None
-    return None
-
-def _save_local_manifest(path: str, m: dict) -> None:
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as fp:
-        json.dump(m, fp, ensure_ascii=False, indent=2, sort_keys=True)
-
-def _manifests_differ(local: dict | None, remote: dict) -> bool:
-    """md5 있으면 md5, 없으면 modifiedTime 비교."""
-    if local is None:
-        return True
-    if set(local.keys()) != set(remote.keys()):
-        return True
-    for fid, r in remote.items():
-        l = local.get(fid, {})
-        if l.get("md5") and r.get("md5"):
-            if l["md5"] != r["md5"]:
-                return True
-        if l.get("modifiedTime") != r.get("modifiedTime"):
-            return True
-    return False
-
 def _normalize_sa(raw_sa: Any | None) -> Mapping[str, Any] | None:
-    """서비스 계정 JSON을 dict로 정규화 (Mapping/AttrDict/문자열 모두 허용)."""
+    """서비스 계정 JSON을 dict로 정규화 (Mapping/AttrDict/문자열/중첩 모두 허용)."""
     if raw_sa is None:
         return None
-    # Streamlit secrets는 AttrDict(=Mapping)로 들어올 수 있음
+
+    # 1) 기본 파싱
     if isinstance(raw_sa, Mapping):
-        return dict(raw_sa)
-    if isinstance(raw_sa, str) and raw_sa.strip():
+        d = dict(raw_sa)
+    elif isinstance(raw_sa, str) and raw_sa.strip():
         try:
-            return json.loads(raw_sa)  # 문자열(JSON) 지원
+            d = json.loads(raw_sa)
         except Exception:
             return None
-    return None
+    else:
+        return None
+
+    # 2) 중첩 해제
+    for k in ("service_account", "serviceAccount"):
+        if isinstance(d.get(k), Mapping):
+            d = dict(d[k])
+
+    # 3) private_key 개행 복원
+    pk = d.get("private_key")
+    if isinstance(pk, str) and "\\n" in pk and "\n" not in pk:
+        d["private_key"] = pk.replace("\\n", "\n")
+
+    return d
+
+def _validate_sa(creds: Mapping[str, Any] | None) -> Mapping[str, Any]:
+    """필수 키 누락 시 친절한 에러."""
+    if not creds:
+        st.error("GDRIVE 서비스계정 자격증명이 비어 있습니다. secrets에 JSON을 넣어주세요.")
+        st.stop()
+
+    required = {
+        "type", "project_id", "private_key_id", "private_key",
+        "client_email", "client_id", "token_uri",
+    }
+    missing = [k for k in required if k not in creds]
+    if missing:
+        st.error(
+            "서비스계정 JSON에 필수 키가 누락되었습니다: "
+            + ", ".join(missing)
+            + "  (secrets에서 키 이름/철자와 값 형식을 확인하세요. "
+              "private_key는 줄바꿈이 복원되어야 합니다.)"
+        )
+        # 참고용: 보유 키 목록만(값은 표시하지 않음)
+        with st.expander("진단 정보(보유 키 목록)"):
+            st.write(sorted(list(creds.keys())))
+        st.stop()
+
+    return creds
 
 def _build_index_with_progress(update_pct: Callable[[int, str | None], None],
                                update_msg: Callable[[str], None],
                                gdrive_folder_id: str,
                                gcp_creds: Mapping[str, Any],
                                persist_dir: str):
-    """Drive → 문서 로드 → 인덱스 생성 → 디스크 저장"""
     from llama_index.core import VectorStoreIndex
     from llama_index.readers.google import GoogleDriveReader
-
-    update_pct(5, "Google Drive 인증 준비")
-    if not gcp_creds:
-        st.error("❌ GDRIVE_SERVICE_ACCOUNT_JSON이 비었습니다.")
-        st.stop()
 
     update_pct(15, "Drive 리더 초기화")
     loader = GoogleDriveReader(gcp_creds_dict=gcp_creds)
@@ -167,14 +166,38 @@ def get_or_build_index(update_pct: Callable[[int, str | None], None],
                        persist_dir: str,
                        manifest_path: str):
     """Drive 변경을 감지해 저장본을 쓰거나, 변경 시에만 재인덱싱."""
-    gcp_creds = _normalize_sa(raw_sa)
     update_pct(5, "드라이브 변경 확인 중…")
+    gcp_creds = _validate_sa(_normalize_sa(raw_sa))  # ← None/누락키 방지 + 개행보정
+
     remote = _fetch_drive_manifest(gcp_creds, gdrive_folder_id)
-    local = _load_local_manifest(manifest_path)
+
+    local = None
+    if os.path.exists(manifest_path):
+        try:
+            with open(manifest_path, "r", encoding="utf-8") as fp:
+                local = json.load(fp)
+        except Exception:
+            local = None
+
+    def _manifests_differ(local_m: dict | None, remote_m: dict) -> bool:
+        if local_m is None:
+            return True
+        if set(local_m.keys()) != set(remote_m.keys()):
+            return True
+        for fid, r in remote_m.items():
+            l = local_m.get(fid, {})
+            if l.get("md5") and r.get("md5"):
+                if l["md5"] != r["md5"]:
+                    return True
+            if l.get("modifiedTime") != r.get("modifiedTime"):
+                return True
+        return False
 
     if os.path.exists(persist_dir) and not _manifests_differ(local, remote):
         update_pct(25, "변경 없음 → 저장된 두뇌 로딩")
-        idx = _load_index_from_disk(persist_dir)
+        from llama_index.core import StorageContext, load_index_from_storage
+        storage_context = StorageContext.from_defaults(persist_dir=persist_dir)
+        idx = load_index_from_storage(storage_context)
         update_pct(100, "완료!")
         return idx
 
@@ -184,13 +207,16 @@ def get_or_build_index(update_pct: Callable[[int, str | None], None],
     update_pct(40, "변경 감지 → 문서 로드/인덱스 생성")
     idx = _build_index_with_progress(update_pct, update_msg, gdrive_folder_id, gcp_creds, persist_dir)
 
-    _save_local_manifest(manifest_path, remote)
+    # 새 매니페스트 저장
+    os.makedirs(os.path.dirname(manifest_path), exist_ok=True)
+    with open(manifest_path, "w", encoding="utf-8") as fp:
+        json.dump(remote, fp, ensure_ascii=False, indent=2, sort_keys=True)
+
     update_pct(100, "완료!")
     return idx
 
 # === QA 유틸 ==================================================================
 def get_text_answer(query_engine, question: str, system_prompt: str) -> str:
-    """선택된 페르소나 지침 + 사용자의 질문을 합쳐 쿼리하고, 출처 파일명을 함께 반환."""
     try:
         full_query = (
             f"{system_prompt}\n\n"
@@ -201,11 +227,10 @@ def get_text_answer(query_engine, question: str, system_prompt: str) -> str:
         response = query_engine.query(full_query)
         answer_text = str(response)
         try:
-            files = [n.metadata.get('file_name', '알 수 없음') for n in getattr(response, "source_nodes", [])]
+            files = [n.metadata.get("file_name", "알 수 없음") for n in getattr(response, "source_nodes", [])]
             source_files = ", ".join(sorted(list(set(files)))) if files else "출처 정보 없음"
         except Exception:
             source_files = "출처 정보 없음"
-
         return f"{answer_text}\n\n---\n*참고 자료: {source_files}*"
     except Exception as e:
         return f"텍스트 답변 생성 중 오류 발생: {e}"
