@@ -74,10 +74,13 @@ st.markdown("## 🔗 Google Drive 연결 테스트")
 st.caption("서비스계정 저장은 공유드라이브 Writer 권한이 필요. 인덱싱은 Readonly면 충분합니다.")
 try:
     # ── replace this block inside app.py (Google Drive 연결 테스트 카드) ──
-from src.rag_engine import drive_diagnostics
-
-st.markdown("## 🔗 Google Drive 연결 테스트")
-st.caption("서비스계정은 **공유/내 드라이브** 중 접근하는 폴더에 대해 '보기' 이상 권한이 필요합니다. 인덱싱은 Readonly면 충분.")
+# ==== Google Drive 연결/진단 유틸 임포트 ====
+try:
+    from src.rag_engine import (
+        smoke_test_drive,
+        preview_drive_files,
+        drive_diagnostics,
+    )
 
 ok, headline, details = drive_diagnostics(settings.GDRIVE_FOLDER_ID)
 if ok:
@@ -95,8 +98,9 @@ with st.expander("🔎 연결/권한 진단 상세", expanded=not ok):
 except Exception:
     st.error("`src.rag_engine` 임포트 실패")
     import traceback, os as _os
-    st.write("파일 존재:", _os.path.exists("src/rag_engine.py"))
-    with st.expander("임포트 스택", expanded=True): st.code(traceback.format_exc())
+    st.write("파일 존재 여부:", _os.path.exists("src/rag_engine.py"))
+    with st.expander("임포트 스택", expanded=True):
+        st.code(traceback.format_exc())
     st.stop()
 
 col1, col2 = st.columns([0.65, 0.35])
