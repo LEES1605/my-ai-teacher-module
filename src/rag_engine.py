@@ -107,7 +107,6 @@ def _validate_sa(creds: Mapping[str, Any] | None) -> Mapping[str, Any]:
             + "  (secrets에서 키 이름/철자와 값 형식을 확인하세요. "
               "private_key는 줄바꿈이 복원되어야 합니다.)"
         )
-        # 참고용: 보유 키 목록만(값은 표시하지 않음)
         with st.expander("진단 정보(보유 키 목록)"):
             st.write(sorted(list(creds.keys())))
         st.stop()
@@ -119,11 +118,19 @@ def _build_index_with_progress(update_pct: Callable[[int, str | None], None],
                                gdrive_folder_id: str,
                                gcp_creds: Mapping[str, Any],
                                persist_dir: str):
+    """Drive → 문서 로드 → 인덱스 생성 → 디스크 저장"""
     from llama_index.core import VectorStoreIndex
     from llama_index.readers.google import GoogleDriveReader
 
     update_pct(15, "Drive 리더 초기화")
-    loader = GoogleDriveReader(gcp_creds_dict=gcp_creds)
+    # ✅ 최신 LlamaIndex는 service_account_key 인자를 사용함
+    try:
+        loader = GoogleDriveReader(service_account_key=gcp_creds)
+    except Exception as e:
+        st.error("GoogleDriveReader 초기화 실패: 서비스계정 키 형식 또는 라이브러리 버전을 확인하세요.")
+        with st.expander("자세한 오류 보기", expanded=True):
+            st.exception(e)
+        st.stop()
 
     update_pct(30, "문서 목록 불러오는 중")
     try:
@@ -167,7 +174,7 @@ def get_or_build_index(update_pct: Callable[[int, str | None], None],
                        manifest_path: str):
     """Drive 변경을 감지해 저장본을 쓰거나, 변경 시에만 재인덱싱."""
     update_pct(5, "드라이브 변경 확인 중…")
-    gcp_creds = _validate_sa(_normalize_sa(raw_sa))  # ← None/누락키 방지 + 개행보정
+    gcp_creds = _validate_sa(_normalize_sa(raw_sa))
 
     remote = _fetch_drive_manifest(gcp_creds, gdrive_folder_id)
 
