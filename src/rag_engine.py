@@ -6,6 +6,137 @@ from typing import Callable, Any, Mapping, Iterable, List, Dict
 import streamlit as st
 from src.config import settings
 
+# ── add to: src/rag_engine.py ───────────────────────────────────────────────
+from typing import Tuple, List
+from googleapiclient.errors import HttpError
+
+def _parse_service_account(raw: Any) -> Tuple[Mapping[str, Any] | None, str | None]:
+    """
+    secrets 의 GOOGLE_SERVICE_ACCOUNT_JSON 을 dict 로 정규화.
+    - dict: 그대로 반환
+    - str : JSON 파싱 시도
+    - 그 외: 에러
+    """
+    if isinstance(raw, Mapping):
+        return raw, None
+    if isinstance(raw, str):
+        s = raw.strip()
+        if s.startswith("{") and s.endswith("}"):
+            try:
+                return json.loads(s), None
+            except Exception as e:
+                return None, f"JSON parse error: {e}"
+        # TOML 테이블이 아닌 일반 문자열/빈 값
+        return None, "Expected JSON string or dict, but got a plain string."
+    return None, f"Unsupported type: {type(raw).__name__}"
+
+def _redact(s: str, keep: int = 6) -> str:
+    if not s:
+        return "(blank)"
+    return (s[:keep] + "…") if len(s) > keep else s
+
+def _validate_sa_dict(d: Mapping[str, Any]) -> Tuple[bool, List[str], List[str]]:
+    """
+    SA dict 필수 필드/형식 점검.
+    returns: (ok, errors, notes)
+    """
+    required = ["type", "project_id", "private_key_id", "private_key", "client_email", "client_id", "token_uri"]
+    errors, notes = [], []
+
+    missing = [k for k in required if not d.get(k)]
+    if missing:
+        errors.append(f"Missing keys: {', '.join(missing)}")
+
+    if d.get("type") != "service_account":
+        errors.append("type must be 'service_account'.")
+
+    pk = str(d.get("private_key", ""))
+    if "BEGIN PRIVATE KEY" not in pk or "END PRIVATE KEY" not in pk:
+        errors.append("private_key looks malformed (BEGIN/END not found).")
+    else:
+        notes.append("private_key: looks ok")
+
+    email = str(d.get("client_email", ""))
+    if email and not email.endswith(".iam.gserviceaccount.com"):
+        errors.append("client_email should end with '.iam.gserviceaccount.com'")
+    else:
+        notes.append(f"client_email: {_redact(email)}")
+
+    token_uri = str(d.get("token_uri", ""))
+    if token_uri and "oauth2.googleapis.com/token" not in token_uri:
+        errors.append("token_uri should be 'https://oauth2.googleapis.com/token'")
+    else:
+        notes.append(f"token_uri: {token_uri or '(blank)'}")
+
+    # 참고 정보
+    notes.append(f"project_id: {_redact(str(d.get('project_id','')))}")
+    notes.append(f"client_id:  {_redact(str(d.get('client_id','')))}")
+    return (len(errors) == 0), errors, notes
+
+def drive_diagnostics(folder_id: str | None = None) -> Tuple[bool, str, List[str]]:
+    """
+    서비스계정 포맷/필수값/Drive 접근까지 단계별 진단.
+    returns: (ok, headline, details[])
+    """
+    details: List[str] = []
+    sa_raw = settings.GDRIVE_SERVICE_ACCOUNT_JSON
+
+    # 1) 파싱
+    sa, parse_err = _parse_service_account(sa_raw)
+    if parse_err:
+        details.append(f"Service account parse error: {parse_err}")
+        details.append("→ Secrets에서 GOOGLE_SERVICE_ACCOUNT_JSON을 'TOML 테이블' 또는 'JSON 문자열'로 저장하세요.")
+        return False, "Service account parse failed.", details
+
+    # 2) 필드 검증
+    ok, errs, notes = _validate_sa_dict(sa)
+    details.extend(notes)
+    if not ok:
+        details.extend([f"ERROR · {e}" for e in errs])
+        return False, "Service account validation failed (필수 키/형식 오류).", details
+
+    # 3) Drive 접근 테스트
+    try:
+        svc = _build_drive_service(sa)
+        if folder_id:
+            meta = svc.files().get(
+                fileId=folder_id,
+                fields="id,name,driveId,ownedByMe,parents",
+                supportsAllDrives=True,
+            ).execute()
+            name = meta.get("name", "(unknown)")
+            details.append(f"folder reachable: name={name}, id={folder_id}, driveId={meta.get('driveId') or 'MyDrive'}")
+            return True, f"✅ Drive 연결 OK · 폴더명: {name}", details
+        else:
+            return True, "✅ Drive client OK (folder_id not provided).", details
+
+    except HttpError as he:
+        status = getattr(getattr(he, "resp", None), "status", "?")
+        text = ""
+        try:
+            if he.content:
+                text = he.content.decode(errors="ignore")[:400]
+        except Exception:
+            text = str(he)[:400]
+        details.append(f"HTTP {status}: {text}")
+
+        if status == 403:
+            details.append("→ 권한 문제: prepared 폴더를 서비스계정 client_email에 '보기' 이상으로 공유했는지 확인하세요.")
+        if status == 404:
+            details.append("→ 폴더 ID가 틀리거나 접근 권한이 없습니다. URL에서 ID를 다시 복사해 보세요.")
+        return False, "Drive API access failed.", details
+    except Exception as e:
+        details.append(f"{type(e).__name__}: {e}")
+        return False, "Drive client creation failed.", details
+
+# (기존 smoke_test_drive 유지/교체 — 짧은 메시지용)
+def smoke_test_drive() -> tuple[bool, str]:
+    ok, head, _ = drive_diagnostics(settings.GDRIVE_FOLDER_ID)
+    return ok, head
+
+# (옵션) 미리보기 함수는 그대로 두셔도 됩니다.
+# ─────────────────────────────────────────────────────────────────────────────
+
 # ================================ 예외 ================================
 class CancelledError(Exception):
     pass
