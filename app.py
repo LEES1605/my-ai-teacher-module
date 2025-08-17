@@ -278,8 +278,7 @@ with st.expander("📤 관리자: 자료 업로드 (원본→prepared 저장)", 
         "Conjunctions & Clauses(접속사/절)","Conditionals(조건문)","Relative Clauses(관계사절)",
         "Reported Speech(화법전환)","Questions & Negation(의문문/부정문)","Sentence Structure(문장구조·어순)"
     ]
-    topics_text = st.text_area("토픽 목록(줄바꿈, 자동 최적화용)", value="\n".join(default_topics),
-                               height=150, disabled=not auto_optimize)
+    topics_text = st.text_area("토픽 목록(줄바꿈, 자동 최적화용)", value="\n".join(default_topics), height=150, disabled=not auto_optimize)
     booklet_title = st.text_input("소책자 세트 제목", value="Grammar Booklets", disabled=not auto_optimize)
     make_citations = st.checkbox("소책자에 참고자료(출처) 섹션 포함", value=True, disabled=not auto_optimize)
 
@@ -288,7 +287,9 @@ with st.expander("📤 관리자: 자료 업로드 (원본→prepared 저장)", 
     files = st.file_uploader("로컬 파일 선택 (여러 개 가능)", type=SUPPORTED_TYPES, accept_multiple_files=True)
     gdocs_urls = st.text_area("Google Docs/Slides/Sheets URL (줄바꿈으로 여러 개)", height=80)
 
-    prog = st.progress(0, text="대기 중…"); status_area = st.empty(); result_area = st.empty()
+    prog = st.progress(0, text="대기 중…")
+    status_area = st.empty()
+    result_area = st.empty()
 
     if st.button("업로드/가져오기 → prepared", type="primary", use_container_width=True):
         from googleapiclient.discovery import build
@@ -301,40 +302,50 @@ with st.expander("📤 관리자: 자료 업로드 (원본→prepared 저장)", 
         drive_sa = build("drive","v3",credentials=creds_sa)
         drive_oauth = build_drive_service() if is_signed_in() else None
 
-        created, done, total = [], 0, 1
+        created = []
+        total = 1
         if files: total += len(files)
         url_list = [u.strip() for u in (gdocs_urls.splitlines() if gdocs_urls else []) if u.strip()]
         if url_list: total += len(url_list)
 
-        def _tick(msg): 
-            nonlocal done
-            done += 1; pct = int(done/max(total,1)*100)
-            prog.progress(pct, text=msg); status_area.info(msg)
+        # ✅ nonlocal 없이 진행률을 저장하는 작은 상태 dict
+        progress_state = {"done": 0, "total": total}
+        def _tick(msg: str):
+            progress_state["done"] += 1
+            pct = int(progress_state["done"] / max(progress_state["total"], 1) * 100)
+            prog.progress(pct, text=msg)
+            status_area.info(msg)
 
         try:
             # a) 로컬 파일
             if files:
                 for f in files:
-                    data = f.read(); buf = io.BytesIO(data)
-                    base = _safe_name(f.name); ext = (base.rsplit(".",1)[-1].lower() if "." in base else "")
-                    name = f"{_ts()}__{base}"; mime = _guess_mime_by_ext(base)
+                    data = f.read()
+                    buf = io.BytesIO(data)
+                    base = _safe_name(f.name)
+                    ext = (base.rsplit(".",1)[-1].lower() if "." in base else "")
+                    name = f"{_ts()}__{base}"
+                    mime = _guess_mime_by_ext(base)
+
                     media = MediaIoBaseUpload(buf, mimetype=mime, resumable=False)
                     meta = {"name": name, "parents":[settings.GDRIVE_FOLDER_ID]}
                     _tick(f"업로드 중: {name}")
                     res = drive_sa.files().create(body=meta, media_body=media, fields="id,webViewLink").execute()
                     created.append({"id":res["id"],"name":name,"link":res.get("webViewLink",""),"ext":ext,"orig_base":base})
-                    time.sleep(0.05)
 
             # b) Google 문서 링크
             def _parse_gdoc_id(s: str) -> str|None:
                 for pat in [r"/d/([-\w]{15,})", r"[?&]id=([-\w]{15,})$", r"^([-\w]{15,})$"]:
-                    m = re.search(pat, s.strip()); 
+                    m = re.search(pat, s.strip())
                     if m: return m.group(1)
                 return None
 
             for raw in url_list:
                 file_id = _parse_gdoc_id(raw)
-                if not file_id: _tick("잘못된 링크 건너뜀"); continue
+                if not file_id:
+                    _tick("잘못된 링크 건너뜀")
+                    continue
+
                 drive_ro = drive_oauth or drive_sa
                 try:
                     meta = drive_ro.files().get(fileId=file_id, fields="id,name,mimeType").execute()
@@ -343,17 +354,21 @@ with st.expander("📤 관리자: 자료 업로드 (원본→prepared 저장)", 
                     if drive_ro is drive_oauth:
                         try:
                             meta = drive_sa.files().get(fileId=file_id, fields="id,name,mimeType").execute()
-                            name0, mtype = meta.get("name","untitled"), meta.get("mimeType",""); drive_ro = drive_sa
+                            name0, mtype = meta.get("name","untitled"), meta.get("mimeType","")
+                            drive_ro = drive_sa
                         except Exception as e2:
-                            status_area.error(f"접근 실패: {e2}"); continue
+                            status_area.error(f"접근 실패: {e2}")
+                            continue
                     else:
-                        status_area.error("접근 실패(공유 필요)"); continue
+                        status_area.error("접근 실패(공유 필요)")
+                        continue
 
                 GOOGLE_NATIVE = {
                     "application/vnd.google-apps.document": ("application/pdf",".pdf"),
                     "application/vnd.google-apps.presentation": ("application/pdf",".pdf"),
                     "application/vnd.google-apps.spreadsheet": ("application/pdf",".pdf"),
                 }
+
                 if mtype in GOOGLE_NATIVE:
                     export_mime, ext = GOOGLE_NATIVE[mtype]
                     _tick(f"내보내는 중: {name0}{ext}")
@@ -363,7 +378,8 @@ with st.expander("📤 관리자: 자료 업로드 (원본→prepared 저장)", 
                     media = MediaIoBaseUpload(buf, mimetype=export_mime, resumable=False)
                     meta2 = {"name": name, "parents":[settings.GDRIVE_FOLDER_ID]}
                     res2 = drive_sa.files().create(body=meta2, media_body=media, fields="id,webViewLink").execute()
-                    created.append({"id":res2["id"],"name":name,"link":res2.get("webViewLink",""),"ext":ext.strip("."),"orig_base":name0})
+                    created.append({"id":res2["id"],"name":name,"link":res2.get("webViewLink",""),
+                                    "ext":ext.strip("."),"orig_base":name0})
                 else:
                     _tick(f"복사 중: {name0}")
                     body = {"name": f"{_ts()}__{_safe_name(name0)}", "parents":[settings.GDRIVE_FOLDER_ID]}
@@ -373,21 +389,23 @@ with st.expander("📤 관리자: 자료 업로드 (원본→prepared 저장)", 
                         if drive_oauth:
                             res3 = drive_oauth.files().copy(fileId=file_id, body=body, fields="id,webViewLink").execute()
                         else:
-                            status_area.error("복사 실패(권한 부족)"); continue
+                            status_area.error("복사 실패(권한 부족)")
+                            continue
                     created.append({"id":res3["id"],"name":body["name"],"link":res3.get("webViewLink",""),
                                     "ext":"", "orig_base": name0})
-                    time.sleep(0.05)
 
             # c) (선택) AI 제목 변경
             renamed_rows = []
             if auto_title and created:
                 used=set()
                 for item in created:
-                    fid, old = item["id"], item["name"]; ext = f".{item['ext']}" if item.get("ext") else ""
+                    fid, old = item["id"], item["name"]
+                    ext = f".{item['ext']}" if item.get("ext") else ""
                     ai_title = _ai_title(item.get("orig_base", old), hint=title_hint)
                     new_name = _safe_name(f"{_ts()}__{ai_title}{ext}")
                     k=new_name; n=2
-                    while k in used: k=f"{new_name} ({n})"; n+=1
+                    while k in used: 
+                        k=f"{new_name} ({n})"; n+=1
                     try:
                         drive_sa.files().update(fileId=fid, body={"name":k}).execute()
                         renamed_rows.append({"original":old,"renamed_to":k,"open":item["link"]})
@@ -403,10 +421,14 @@ with st.expander("📤 관리자: 자료 업로드 (원본→prepared 저장)", 
             status_area.success(f"총 {len(created)}개 항목 처리 완료 (prepared)")
             if renamed_rows:
                 df = pd.DataFrame(renamed_rows)
-                result_area.dataframe(df, use_container_width=True, hide_index=True,
-                                      column_config={"original": st.column_config.TextColumn("원래 파일명"),
-                                                     "renamed_to": st.column_config.TextColumn("변경 후 파일명"),
-                                                     "open": st.column_config.LinkColumn("열기", display_text="열기")})
+                result_area.dataframe(
+                    df, use_container_width=True, hide_index=True,
+                    column_config={
+                        "original": st.column_config.TextColumn("원래 파일명"),
+                        "renamed_to": st.column_config.TextColumn("변경 후 파일명"),
+                        "open": st.column_config.LinkColumn("열기", display_text="열기")
+                    }
+                )
             st.toast("업로드/가져오기 완료", icon="✅")
 
             # e) 자동 최적화 예약 + 인덱싱 자동 시작
@@ -423,7 +445,12 @@ with st.expander("📤 관리자: 자료 업로드 (원본→prepared 저장)", 
             st.rerun()
 
         except Exception as e:
-            prog.progress(0, text="오류"); status_area.error(f"처리 실패: {e}")
+            prog.progress(0, text="오류")
+            status_area.error(f"처리 실패: {e}")
+
+
+# ============= 7) 인덱싱 보고서 ================================================
+
 
 # ============= 7) 인덱싱 보고서 ================================================
 rep = ss.get("indexing_report")
