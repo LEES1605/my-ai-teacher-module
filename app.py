@@ -115,38 +115,58 @@ with st.sidebar:
         if st.button("로그아웃"):
             sign_out(); st.rerun()
 
-# ===== Drive 연결 테스트 =====
+# ===== Google Drive 연결 테스트 =====
 st.markdown("## 🔗 Google Drive 연결 테스트")
-st.caption("서비스계정 저장은 공유드라이브 Writer 권한이 필요. 인덱싱은 Readonly면 충분합니다.")
-try:
-    # ── replace this block inside app.py (Google Drive 연결 테스트 카드) ──
-# ==== Google Drive 연결/진단 유틸 임포트 ====
-try:
-    from src.rag_engine import (
-        smoke_test_drive,
-        preview_drive_files,
-        drive_diagnostics,  # ← 진단 함수 (누락 필드/파싱 문제를 화면에 표시)
-    )
-except Exception:
-    st.error("`src.rag_engine` 임포트 실패")
-    import traceback, os as _os
-    st.write("파일 존재 여부:", _os.path.exists("src/rag_engine.py"))
-    with st.expander("임포트 스택", expanded=True):
-        st.code(traceback.format_exc())
+st.caption("서비스계정 저장은 공유드라이브 Writer 권한이 필요합니다. 인덱싱 자체는 Readonly 권한이면 충분합니다.")
+
+from src.config import settings
+from src.rag_engine import (
+    smoke_test_drive,
+    preview_drive_files,
+    drive_diagnostics,  # 누락 필드/포맷 진단
+)
+
+# 1) 서비스계정 JSON 진단 (포맷/필수키/개행 등 확인)
+ok_sa, diag = drive_diagnostics(settings.GDRIVE_SERVICE_ACCOUNT_JSON)
+if ok_sa:
+    st.success("🔎 Service Account JSON OK")
+else:
+    st.warning("🔎 Service Account JSON 문제 감지 — 아래 내용을 확인하세요.")
+with st.expander("서비스계정 JSON 진단 상세", expanded=not ok_sa):
+    st.code(diag)
+
+# 포맷이 틀리면 아래 기능은 무의미하므로 바로 멈춤
+if not ok_sa:
     st.stop()
 
-# secrets 진단(서비스계정 JSON이 dict로 파싱됐는지, 필수 키 누락 여부)
-try:
-    from src.config import settings
-    ok, details = drive_diagnostics(settings.GDRIVE_SERVICE_ACCOUNT_JSON)
-    if ok:
-        st.success("🔎 Service Account JSON OK")
-    else:
-        st.warning("🔎 Service Account JSON 문제 감지")
-        with st.expander("자세히 보기", expanded=True):
-            st.code(details)
-except Exception as e:
-    st.warning(f"진단 중 예외: {e}")
+# 2) 폴더 미리보기 & 연결 상태
+c1, c2 = st.columns([0.65, 0.35])
+with c1:
+    if st.button("폴더 파일 미리보기 (최신 10개)", use_container_width=True):
+        ok, msg, rows = preview_drive_files(max_items=10)
+        if ok and rows:
+            df = pd.DataFrame(rows)
+            df["type"] = df["mime"].str.replace("application/vnd.google-apps.", "", regex=False)
+            df = df.rename(columns={"modified": "modified_at"})[["name", "link", "type", "modified_at"]]
+            st.dataframe(
+                df, use_container_width=True, height=360,
+                column_config={
+                    "name": st.column_config.TextColumn("파일명"),
+                    "link": st.column_config.LinkColumn("open", display_text="열기"),
+                    "type": st.column_config.TextColumn("유형"),
+                    "modified_at": st.column_config.TextColumn("수정시각"),
+                },
+                hide_index=True,
+            )
+        elif ok:
+            st.warning("폴더에 파일이 없거나 접근 권한이 부족합니다.")
+        else:
+            st.error(msg)
+
+with c2:
+    ok, msg = smoke_test_drive()
+    st.success(msg) if ok else st.warning(msg)
+
 
 # (원하시면 '폴더 파일 미리보기' 버튼은 기존 코드 유지)
 # ─────────────────────────────────────────────────────────────────
