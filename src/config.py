@@ -5,24 +5,23 @@ from pathlib import Path
 import os, json
 from typing import Any, Mapping
 
-# ========== 앱 런타임 산출물 경로 (인덱스/캐시 등) ==========
+# ========= 앱 런타임 산출물 경로 (인덱스/캐시 등) =========
 # 우선순위: 환경변수 AI_TEACHER_DATA_DIR → 프로젝트/.data/my_ai_teacher
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
-# 숨김(.data) 대신 공개 data/ 경로로 변경
-_DATA_ROOT = Path(os.getenv("AI_TEACHER_DATA_DIR", _PROJECT_ROOT / "data" / "my_ai_teacher"))
+_DATA_ROOT = Path(os.getenv("AI_TEACHER_DATA_DIR", _PROJECT_ROOT / ".data" / "my_ai_teacher"))
 _DATA_ROOT.mkdir(parents=True, exist_ok=True)
 
 APP_DATA_DIR = _DATA_ROOT
 PERSIST_DIR = str(APP_DATA_DIR / "storage_gdrive")          # ← 인덱스 영구 저장
 MANIFEST_PATH = str(APP_DATA_DIR / "drive_manifest.json")   # ← 지난번 매니페스트
 
-# ========== UI/브랜딩 상수 ==========
+# ========= UI/브랜딩 상수 =========
 BRAND_COLOR = "#9067C6"
 TITLE_TEXT = "세상에서 가장 쉬운 이유문법"
 TITLE_SIZE_REM = 3.0
 LOGO_HEIGHT_PX = 110
 
-# ========== SecretStr 간단 래퍼 ==========
+# ========= SecretStr 간단 래퍼 =========
 class SecretStr:
     def __init__(self, v: Any | None):
         self._v = "" if v is None else str(v)
@@ -33,7 +32,7 @@ class SecretStr:
     def __repr__(self) -> str:
         return "SecretStr(*****)"
 
-# ========== settings: Streamlit Secrets / 환경변수 래핑 ==========
+# ========= settings: Streamlit Secrets / 환경변수 래핑 =========
 try:
     import streamlit as st
     _SECRETS: Mapping[str, Any] = st.secrets if hasattr(st, "secrets") else {}
@@ -57,8 +56,8 @@ def _get_jsonish(key: str) -> Any:
 class _Settings:
     # --- 필수/주요 ---
     GEMINI_API_KEY: SecretStr
-    GDRIVE_FOLDER_ID: str
-    GDRIVE_SERVICE_ACCOUNT_JSON: Any  # str(JSON) 또는 dict
+    GDRIVE_FOLDER_ID: str                   # ✅ 인덱싱 대상: "prepared" 폴더 ID를 넣으세요!
+    GDRIVE_SERVICE_ACCOUNT_JSON: Any        # str(JSON) 또는 dict
 
     # --- LLM/RAG 기본값 ---
     LLM_MODEL: str
@@ -71,8 +70,7 @@ class _Settings:
     OPENAI_LLM_MODEL: str | None
     OPENAI_EMBED_MODEL: str | None
 
-    # --- 경로 (settings에서도 접근 가능하도록) ---
-    APP_DATA_DIR: str = str(APP_DATA_DIR)  # ← 추가: 클래스 레벨(디폴트)
+    # --- 경로 ---
     PERSIST_DIR: str = PERSIST_DIR
     MANIFEST_PATH: str = MANIFEST_PATH
 
@@ -96,11 +94,6 @@ class _Settings:
         self.OPENAI_API_KEY = SecretStr(oai_key) if oai_key else None
         self.OPENAI_LLM_MODEL = str(_get("OPENAI_LLM_MODEL", "gpt-4o-mini")).strip()
         self.OPENAI_EMBED_MODEL = str(_get("OPENAI_EMBED_MODEL", "text-embedding-3-small")).strip()
-
-        # 경로 값을 인스턴스 속성으로도 보장 (다른 모듈에서 settings.APP_DATA_DIR 사용 가능)
-        self.APP_DATA_DIR = str(APP_DATA_DIR)
-        self.PERSIST_DIR = str(PERSIST_DIR)
-        self.MANIFEST_PATH = str(MANIFEST_PATH)
 
 # 외부에서 import할 settings 싱글턴
 settings = _Settings()
