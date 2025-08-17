@@ -1,44 +1,29 @@
-# src/ui.py
+# src/ui.py — 공통 UI
+
+from __future__ import annotations
 import streamlit as st
-import base64
 from src.config import BRAND_COLOR, TITLE_TEXT, TITLE_SIZE_REM, LOGO_HEIGHT_PX
 
-@st.cache_data(show_spinner=False)
-def get_img_as_base64(file: str) -> str:
-    try:
-        with open(file, "rb") as f:
-            return base64.b64encode(f.read()).decode()
-    except FileNotFoundError:
-        return ""
+CSS = f"""
+<style>
+:root {{
+  --brand: {BRAND_COLOR};
+}}
+.gp-wrap {{
+  position: relative; height: 24px; background: #f2f2f2; border-radius: 6px; overflow: hidden;
+}}
+.gp-fill {{ height: 100%; background: var(--brand); transition: width .2s ease; }}
+.gp-label {{
+  position: absolute; top: 0; left: 0; right: 0; bottom: 0;
+  display:flex; align-items:center; justify-content:center; font-weight:600;
+}}
+.gp-msg {{ margin: 6px 0 0 0; color:#555; font-size: 0.9rem; }}
+.header-title {{ font-size: {TITLE_SIZE_REM}rem; font-weight: 800; color: var(--brand); margin: 0 0 6px 0; }}
+</style>
+"""
 
 def load_css():
-    """assets/style.css를 읽어 전역 CSS 주입."""
-    try:
-        with open("assets/style.css", "r", encoding="utf-8") as f:
-            st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
-    except FileNotFoundError:
-        st.warning("⚠️ assets/style.css 파일을 찾을 수 없어요.")
+    st.markdown(CSS, unsafe_allow_html=True)
 
 def render_header():
-    """로고 + 타이틀 헤더 렌더링."""
-    logo_b64 = get_img_as_base64("assets/academy_logo.png")
-    st.markdown(
-        f"""
-        <style>
-        .brand-title{{font-size:{TITLE_SIZE_REM}rem!important;color:{BRAND_COLOR};}}
-        .brand-logo{{height:{LOGO_HEIGHT_PX}px!important;width:auto;object-fit:contain;display:block;}}
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-    st.markdown(
-        f"""
-        <div class="header-bar">
-          <div class="header-left">
-            <img src="data:image/png;base64,{logo_b64}" alt="logo" class="brand-logo" />
-            <h1 class="brand-title">{TITLE_TEXT}</h1>
-          </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    st.markdown(f"<div class='header-title'>{TITLE_TEXT}</div>", unsafe_allow_html=True)
