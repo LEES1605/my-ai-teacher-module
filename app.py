@@ -1,20 +1,18 @@
-# app.py — 스텝 인덱싱(중간취소/재개) + 두뇌준비 안정화
-#        + 인덱싱 보고서(스킵 표시)
-#        + Drive 대화로그 저장(❶ OAuth: Markdown / ❷ 서비스계정: JSONL, chat_log/)
-#        + 페르소나: 🤖Gemini(친절/꼼꼼), 🤖ChatGPT(유머러스/보완)
-#        + 업로드→자동 인덱싱→문법별 소책자(최적화본) Drive 저장 자동화
-#        + 📡 prepared 폴더 변경 감시: 드라이브에 직접 넣어도 자동 최적화(중복 스킵)
+# app.py — 관리자 초기 "완전 스캔(heavy) + 숫자 진행률 + 멈춤 감지" 지원
+#        + prepared/ 직접 투입 감지(중복 스킵) + 업로드/가져오기
+#        + 증분 인덱싱(중간취소/재개) + 소책자 생성 자동화
+#        + Drive 대화로그 저장(OAuth/서비스계정) + 그룹토론 UI(Gemini+ChatGPT)
+
 from __future__ import annotations
 import os, time, uuid, re, json, io, hashlib
 import pandas as pd
 import streamlit as st
 
-# ============= 0) 페이지 설정 ===================================================
+# ================= 0) 페이지/런타임 기본 =================
 st.set_page_config(page_title="나의 AI 영어 교사", layout="wide", initial_sidebar_state="collapsed")
-
-# ============= 1) 부트 가드 & 런타임 안정화 ===================================
 ss = st.session_state
 ss.setdefault("_boot_log", []); ss.setdefault("_oauth_checked", False)
+
 def _boot(msg: str): ss["_boot_log"].append(msg)
 with st.sidebar:
     st.caption("🛠 Boot log (임시)"); _boot_box = st.empty()
@@ -28,7 +26,7 @@ os.environ["STREAMLIT_SERVER_FILE_WATCHER_TYPE"] = "none"
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 os.environ["STREAMLIT_SERVER_ENABLE_WEBSOCKET_COMPRESSION"] = "false"
 
-# ============= 2) 세션 키 초기화 ==============================================
+# ================= 1) 세션 키 초기화 ====================
 ss.setdefault("session_id", uuid.uuid4().hex[:12])
 ss.setdefault("messages", [])
 ss.setdefault("auto_save_chatlog", True)
@@ -39,26 +37,37 @@ ss.setdefault("prep_cancel_requested", False)
 ss.setdefault("session_terminated", False)
 ss.setdefault("index_job", None)
 
-# 업로드/감시 자동 최적화 파이프라인용 플래그/옵션
+# 업로드/감시 파이프라인
 ss.setdefault("_auto_booklets_pending", False)
 ss.setdefault("_auto_topics_text", "")
 ss.setdefault("_auto_booklet_title", "Grammar Booklets")
 ss.setdefault("_auto_make_citations", True)
 
-# 폴더 감시 옵션(기본 ON)
-ss.setdefault("_watch_on_load", True)           # 페이지 열릴 때 자동 스캔
-ss.setdefault("_watch_ran_once", False)         # 무한 rerun 방지
-ss.setdefault("_watch_rename_title", False)     # 감시 시 AI 제목 정리 여부
+# 폴더 감시 옵션
+ss.setdefault("_watch_on_load", True)            # 페이지 열리면 자동 스캔
+ss.setdefault("_watch_ran_once", False)          # 무한 rerun 방지
+ss.setdefault("_watch_rename_title", False)      # 감시 시 AI 제목 정리 여부
 
-# (진단) 하트비트
+# 관리자 전용 상태
+ss.setdefault("_admin_initial_fullscan_done", False)
+ss.setdefault("_admin_scan_cancel", False)
+
+# 진행/워치독 설정
+STALL_WARN_SEC = int(os.getenv("STALL_WARN_SEC", "20"))   # N초 이상 무진행 → 경고
+YIELD_SLEEP    = float(os.getenv("YIELD_SLEEP", "0.05"))  # 루프 UI 갱신 텀
+
+# Fast-scan 노브(일반 사용자 자동 감시용; 관리자는 heavy 우선)
+FAST_LIST_LIMIT = int(os.getenv("PREPARED_FAST_LIST_LIMIT", "400"))
+FAST_HASH_LIMIT = int(os.getenv("PREPARED_FAST_HASH_LIMIT", "40"))
+
 st.caption(f"heartbeat ✅ keys={list(ss.keys())[:8]}")
 
-# ============= 3) 기본 UI 헤더/스타일 =========================================
+# ================= 2) 헤더/스타일 =======================
 from src.ui import load_css, render_header
 load_css(); render_header()
-st.info("✅ 변경이 있을 때만 인덱싱합니다. 저장된 두뇌가 있으면 즉시 로드합니다. (중간 취소/재개 지원)")
+st.info("✅ 첫 방문(관리자)은 정확도를 위해 **완전 스캔**을 수행합니다. 진행률/지연 경고로 상태를 확인할 수 있어요.")
 
-# ============= 4) OAuth 리다이렉트 처리(최종화 1회만) ==========================
+# ================= 3) OAuth 리다이렉트 ===================
 try:
     from src.google_oauth import finish_oauth_if_redirected
     if not st.secrets.get("OAUTH_DISABLE_FINISH"):
@@ -72,7 +81,7 @@ try:
 except Exception as e:
     st.warning(f"OAuth finalize skipped: {e}")
 
-# ============= 5) 사이드바: OAuth/저장 옵션 ====================================
+# ================= 4) 사이드바: 로그인/옵션 ==============
 from src.google_oauth import start_oauth, is_signed_in, build_drive_service, get_user_email, sign_out
 with st.sidebar:
     ss.auto_save_chatlog = st.toggle("대화 자동 저장 (OAuth/내 드라이브, Markdown)", value=ss.auto_save_chatlog)
@@ -87,7 +96,21 @@ with st.sidebar:
         st.success(f"로그인됨: {get_user_email() or '알 수 없음'}")
         if st.button("로그아웃"): sign_out(); st.rerun()
 
-# ============= 6) Google Drive 연결 테스트 =====================================
+# ================= 5) 관리자 판별 ========================
+def _admin_emails() -> set[str]:
+    raw = str(st.secrets.get("ADMIN_EMAILS", "")).strip()
+    return set([e.strip().lower() for e in raw.split(",") if e.strip()])
+def _is_admin() -> bool:
+    if str(st.secrets.get("ADMIN_MODE_ALWAYS_ON","0")).strip() == "1":
+        return True
+    try:
+        return (get_user_email() or "").lower() in _admin_emails()
+    except Exception:
+        return False
+
+IS_ADMIN = _is_admin()
+
+# ================= 6) Drive 연결 테스트 ==================
 st.markdown("## 🔗 Google Drive 연결 테스트")
 st.caption("서비스계정 저장은 공유드라이브 Writer 권한이 필요. 인덱싱은 Readonly면 충분합니다.")
 
@@ -127,12 +150,10 @@ with colR:
     if ok: st.success(msg)
     else:  st.warning(msg)
 
-# ------------------------------------------------------------------------------
-# 공통 유틸
+# ================= 7) 유틸 ===============================
 def _ts(): return time.strftime("%Y%m%d_%H%M%S")
 def _safe_name(name: str) -> str:
-    name = re.sub(r'[\\/:*?"<>|]+', " ", str(name))
-    name = re.sub(r"\s+", " ", name).strip()
+    name = re.sub(r'[\\/:*?"<>|]+', " ", str(name)); name = re.sub(r"\s+", " ", name).strip()
     return name or "untitled"
 def _guess_mime_by_ext(fname: str) -> str:
     ext = (fname.rsplit(".", 1)[-1] if "." in fname else "").lower()
@@ -144,13 +165,10 @@ def _guess_mime_by_ext(fname: str) -> str:
         "xlsx":"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet","xls":"application/vnd.ms-excel","csv":"text/csv",
     }; return MIMES.get(ext, "application/octet-stream")
 
-# 제목생성 LLM 전역 캐시
+# 제목 생성기
 _TITLE_MODEL = None
-
-# ── AI 제목 생성기(LLM + 휴리스틱) ────────────────────────────────────────────
 from src.rag_engine import make_llm, llm_complete
 def _get_title_model():
-    """OpenAI 있으면 OpenAI, 없으면 Gemini, 둘 다 없으면 None"""
     global _TITLE_MODEL
     if _TITLE_MODEL is not None: return _TITLE_MODEL
     try:
@@ -160,14 +178,13 @@ def _get_title_model():
         else:
             _TITLE_MODEL = make_llm("google", settings.GEMINI_API_KEY.get_secret_value(),
                                     getattr(settings,"LLM_MODEL","gemini-1.5-pro"), 0.2)
-        return _TITLE_MODEL
     except Exception:
-        return None
+        _TITLE_MODEL = None
+    return _TITLE_MODEL
 def _heuristic_title(orig_base: str, hint: str = "") -> str:
     base = re.sub(r"\.[^.]+$", "", orig_base)
     base = re.sub(r"^\d{8}_\d{6}__", "", base)
-    base = base.replace("_"," ").replace("-"," ")
-    base = re.sub(r"\s+"," ",base).strip()
+    base = base.replace("_"," ").replace("-"," "); base = re.sub(r"\s+"," ",base).strip()
     if hint: base = f"{hint.strip()} — {base}" if base else hint.strip()
     return (base[:40]).strip() or "untitled"
 def _ai_title(orig_base: str, sample_text: str = "", hint: str = "") -> str:
@@ -187,36 +204,41 @@ def _ai_title(orig_base: str, sample_text: str = "", hint: str = "") -> str:
     except Exception:
         return _heuristic_title(orig_base, hint)
 
-# ── 문법 소책자 생성(Drive 저장) ----------------------------------------------
+# ================= 8) 소책자 생성 =======================
 def generate_booklets_drive(topics: list[str], booklet_title: str, make_citations: bool=True):
     """ss['qe_google'] 기반으로 topics별 .md 생성 → prepared_volumes/<세트명_타임스탬프>/ 저장"""
     from googleapiclient.discovery import build
     from googleapiclient.http import MediaIoBaseUpload
     from src.rag_engine import _normalize_sa, get_text_answer
+
     def _safe(s: str) -> str:
         s = re.sub(r'[\\/:*?"<>|]+', " ", str(s)); s = re.sub(r"\s+", " ", s).strip(); return s[:120] or "untitled"
+
     creds = _normalize_sa(settings.GDRIVE_SERVICE_ACCOUNT_JSON)
     drive = build("drive","v3",credentials=creds)
+
     def _ensure_child(parent_id: str, name: str) -> str:
         q = (f"'{parent_id}' in parents and name = '{name}' "
              "and mimeType = 'application/vnd.google-apps.folder' and trashed = false")
         res = drive.files().list(q=q, fields="files(id,name)", pageSize=1,
                                  includeItemsFromAllDrives=True, supportsAllDrives=True).execute()
-        fs = res.get("files", [])
+        fs = res.get("files", []); 
         if fs: return fs[0]["id"]
         meta = {"name": name, "parents":[parent_id], "mimeType":"application/vnd.google-apps.folder"}
         f = drive.files().create(body=meta, fields="id").execute(); return f["id"]
+
     parent_volumes_id = _ensure_child(settings.GDRIVE_FOLDER_ID, "prepared_volumes")
     set_name = f"{_safe(booklet_title)}_{_ts()}"; set_folder = _ensure_child(parent_volumes_id, set_name)
+
     rows, manifest = [], {"title": booklet_title, "created_at": _ts(), "items": []}
     for topic in topics:
         guide = ("당신은 영어 문법 교사입니다. 아래 토픽을 학생용 소책자 형태로 정리하세요.\n"
                  f"• 토픽: {topic}\n"
-                 "• 핵심 개념을 한국어로, 규칙/형태는 영문 혼용\n"
-                 "• 예문 3~5개 (쉬운→중간 난이도), 한-영 병기\n"
-                 "• 자주 하는 실수/오개념 3개 정리\n"
+                 "• 핵심 개념은 한국어, 규칙/형태는 영문 혼용\n"
+                 "• 예문 3~5개(쉬움→중간), 한-영 병기\n"
+                 "• 자주 하는 실수 3개\n"
                  "• 미니 연습문제 5문항(+정답/해설)\n"
-                 "• 분량 500~900자 내외\n")
+                 "• 500~900자 내외\n")
         if make_citations: guide += "• 마지막에 ‘---\\n*참고 자료: 파일명 …’ 섹션 포함\n"
         md = get_text_answer(ss["qe_google"], f"[토픽]\n{topic}\n\n[과제]\n위 가이드로 학생용 마크다운 작성", guide)
         name = f"{_safe(topic)}.md"; buf = io.BytesIO(md.encode("utf-8"))
@@ -225,10 +247,12 @@ def generate_booklets_drive(topics: list[str], booklet_title: str, make_citation
         file = drive.files().create(body=meta, media_body=media, fields="id,webViewLink").execute()
         rows.append({"topic": topic, "open": file.get("webViewLink")})
         manifest["items"].append({"topic": topic, "file_id": file["id"], "name": name})
+
     # overview & manifest
     ov = [f"# {booklet_title}", "", f"생성시각: {time.strftime('%Y-%m-%d %H:%M:%S')}", ""]
     for it in manifest["items"]: ov.append(f"- {it['topic']} — {it['name']}")
     overview_md = "\n".join(ov) + "\n"
+
     from googleapiclient.http import MediaIoBaseUpload
     drive.files().create(
         body={"name": "overview.md", "parents": [set_folder]},
@@ -241,7 +265,7 @@ def generate_booklets_drive(topics: list[str], booklet_title: str, make_citation
         fields="id").execute()
     return {"folder_name": set_name, "folder_id": set_folder, "rows": rows}
 
-# ── prepared 감시 헬퍼(전역: 버튼/자동공통 사용) ────────────────────────────────
+# ================= 9) prepared 감시/매니페스트 ==========
 from googleapiclient.discovery import build as _build_gd
 from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
 from src.rag_engine import _normalize_sa
@@ -269,9 +293,22 @@ def _save_manifest(drive, manifest, file_id=None):
     else:
         drive.files().create(body={"name":"prepared_manifest.json","parents":[settings.GDRIVE_FOLDER_ID]},
                              media_body=body, fields="id").execute()
-def _list_prepared(drive):
+def _list_prepared(drive, max_items: int | None = None):
     q = f"'{settings.GDRIVE_FOLDER_ID}' in parents and trashed = false"
-    fields = "files(id,name,mimeType,modifiedTime,md5Checksum,size), nextPageToken"
+    fields = "files(id,name,mimeType,modifiedTime,version,md5Checksum,size), nextPageToken"
+    token=None; items=[]; cap = max_items or FAST_LIST_LIMIT
+    while True:
+        page_size = min(1000, max(1, cap-len(items)))
+        res = drive.files().list(q=q, fields=fields, pageSize=page_size, pageToken=token,
+                                 includeItemsFromAllDrives=True, supportsAllDrives=True).execute()
+        items.extend(res.get("files", [])); 
+        if len(items) >= cap: break
+        token=res.get("nextPageToken")
+        if not token: break
+    return items
+def _list_prepared_all(drive):
+    q = f"'{settings.GDRIVE_FOLDER_ID}' in parents and trashed = false"
+    fields = "files(id,name,mimeType,modifiedTime,version,md5Checksum,size), nextPageToken"
     token=None; items=[]
     while True:
         res = drive.files().list(q=q, fields=fields, pageSize=1000, pageToken=token,
@@ -279,78 +316,181 @@ def _list_prepared(drive):
         items.extend(res.get("files", [])); token=res.get("nextPageToken")
         if not token: break
     return items
-def _file_sig(drive, meta):
-    """내용 서명: 바이너리는 md5Checksum, Google 문서는 PDF export 후 SHA256"""
-    mt = meta.get("mimeType",""); fid = meta["id"]
+def _file_sig(drive, meta: dict, fast: bool = False) -> str:
+    """
+    내용 서명:
+      - 일반 파일: md5Checksum 우선. 없으면 (fast=True) 임시서명(size+mtime) 또는 (fast=False) 바이너리 SHA256
+      - Google 문서류: (fast=True) version+mtime 임시서명, (fast=False) PDF export → SHA256
+    """
+    mt = meta.get("mimeType", ""); fid = meta["id"]
     if not mt.startswith("application/vnd.google-apps/"):
-        if meta.get("md5Checksum"): return f"md5:{meta['md5Checksum']}"
+        if meta.get("md5Checksum"): return "md5:"+meta["md5Checksum"]
+        if fast:
+            return f"tmp:{meta.get('size','?')}@{meta.get('modifiedTime','')}"
         req = drive.files().get_media(fileId=fid); buf = io.BytesIO(); MediaIoBaseDownload(buf, req).next_chunk()
         return "sha256:"+hashlib.sha256(buf.getvalue()).hexdigest()
+    if fast:
+        return f"ver:{meta.get('version','?')}@{meta.get('modifiedTime','')}"
     data = drive.files().export(fileId=fid, mimeType="application/pdf").execute()
     return "sha256:"+hashlib.sha256(data).hexdigest()
+
+# ---- 일반 사용자용(빠른 스캔) ----
 def watch_scan_and_schedule(topics_text: str, title: str, cite: bool, rename_title: bool=False):
-    """prepared/ 스캔 → 신규/변경 감지 → 매니페스트 갱신 → 자동 최적화 예약 → 인덱싱 시작(+rerun)"""
     drive = _build_sa_drive()
     mid, manifest = _load_manifest(drive)
-    known = manifest.get("items", {})
+    known: dict = manifest.get("items", {})
+    pending_full: list[str] = manifest.get("pending_full", [])
+    heavy_budget = FAST_HASH_LIMIT
+
+    # 대기열 일부 확정
+    if pending_full and heavy_budget > 0:
+        still=[]
+        for fid in pending_full:
+            if heavy_budget<=0: still.append(fid); continue
+            meta = drive.files().get(fileId=fid, fields="id,name,mimeType,modifiedTime,version,md5Checksum,size").execute()
+            try:
+                sig = _file_sig(drive, meta, fast=False); heavy_budget -= 1
+                known[fid] = {"name": meta.get("name","untitled"), "sig": sig, "processed_at": known.get(fid,{}).get("processed_at")}
+            except Exception:
+                still.append(fid)
+        pending_full = still
+
+    metas = _list_prepared(drive, max_items=FAST_LIST_LIMIT)
     name_sig_set = {(v.get("name"), v.get("sig")) for v in known.values()}
-    metas = _list_prepared(drive)
     new_or_changed = []
     for m in metas:
         fid, name = m["id"], m.get("name","untitled")
-        if name == "prepared_manifest.json":  # 내부 파일 제외
-            continue
+        if name == "prepared_manifest.json": continue
+        is_google = m.get("mimeType","").startswith("application/vnd.google-apps/")
+        has_md5 = bool(m.get("md5Checksum"))
+        needs_heavy = (is_google or not has_md5)
         try:
-            sig = _file_sig(drive, m)
+            sig = _file_sig(drive, m, fast=not needs_heavy or heavy_budget<=0)
+            if needs_heavy and heavy_budget<=0 and fid not in pending_full: pending_full.append(fid)
+            if needs_heavy and heavy_budget>0:
+                heavy_budget -= 1
         except Exception as e:
-            st.warning(f"시그니처 계산 실패: {name} → {e}"); continue
-        prev = known.get(fid)
-        if prev and prev.get("sig")==sig:
+            st.warning(f"시그니처 실패: {name} → {e}")
             continue
+        prev = known.get(fid)
+        if prev and prev.get("sig")==sig: continue
         if (name, sig) in name_sig_set:
             known[fid] = {"name": name, "sig": sig, "processed_at": prev.get("processed_at") if prev else _ts()}
             continue
-        new_or_changed.append({"id":fid,"name":name,"sig":sig,"mimeType":m.get("mimeType","")})
+        new_or_changed.append({"id":fid,"name":name,"sig":sig})
+        known[fid] = {"name": name, "sig": sig, "processed_at": None}
+        name_sig_set.add((name, sig))
+
+    manifest["items"] = known; manifest["pending_full"] = pending_full; manifest["updated_at"] = _ts()
+    _save_manifest(drive, manifest, mid)
+
     if not new_or_changed:
         return False, 0
 
-    # (선택) AI 제목 정리
-    if rename_title:
-        used=set()
-        for it in new_or_changed:
-            fid, old = it["id"], it["name"]
-            ext = ("."+old.rsplit(".",1)[-1]) if "." in old and not old.lower().endswith(".gdoc") else ""
-            new = _safe_name(f"{_ts()}__{_ai_title(old)}{ext}")
-            k=new; n=2
-            while k in used: k=f"{new} ({n})"; n+=1
-            try: _build_sa_drive().files().update(fileId=fid, body={"name":k}).execute()
-            except Exception: pass
-            it["name"]=k; used.add(k)
-
-    # 매니페스트 갱신(미리 기록해 중복 예약 방지)
-    for it in new_or_changed:
-        known[it["id"]] = {"name": it["name"], "sig": it["sig"], "processed_at": None}
-    manifest["items"] = known; manifest["updated_at"] = _ts()
-    _save_manifest(_build_sa_drive(), manifest, mid)
-
-    # 자동 최적화 예약 + 인덱싱 시작
     ss["_auto_booklets_pending"] = True
     ss["_auto_topics_text"] = topics_text
     ss["_auto_booklet_title"] = title
     ss["_auto_make_citations"] = cite
     ss.prep_both_done = False; ss.prep_both_running = True; ss.index_job = None
-    st.info(f"prepared/ 신규/변경 {len(new_or_changed)}개 감지 → 인덱싱/최적화 파이프라인 시작")
+    st.info(f"prepared/ 신규/변경 {len(new_or_changed)}개 감지 → 인덱싱/최적화 시작")
     st.rerun()
     return True, len(new_or_changed)
 
-# ============= 6.5) 📤 관리자: 자료 업로드 (원본→prepared 저장 + 자동 최적화) ===
+# ---- 관리자용(완전 스캔 + 진행률/워치독/취소) ----
+def admin_full_scan_and_schedule(topics_text: str, title: str, cite: bool, rename_title: bool=False):
+    drive = _build_sa_drive()
+    mid, manifest = _load_manifest(drive)
+    known: dict = manifest.get("items", {})
+    name_sig_set = {(v.get("name"), v.get("sig")) for v in known.values()}
+
+    metas = _list_prepared_all(drive)
+    metas = [m for m in metas if m.get("name")!="prepared_manifest.json"]
+
+    # 진행판
+    box = st.container(border=True)
+    with box:
+        st.markdown("### 🛡 관리자: 초기 전체 스캔(정확도 우선)")
+        prog = st.progress(0, text="준비 중…")
+        info_line = st.empty()
+        delay_line = st.empty()
+        cancel_col, _ = st.columns([0.25, 0.75])
+        with cancel_col:
+            if st.button("⛔ 강제 중단", use_container_width=True):
+                ss["_admin_scan_cancel"] = True
+
+    total = len(metas); done = 0
+    started = time.time(); last_tick = time.time()
+    new_or_changed = 0
+
+    for m in metas:
+        if ss.get("_admin_scan_cancel"):
+            info_line.warning("사용자에 의해 중단됨.")
+            break
+
+        fid, name = m["id"], m.get("name","untitled")
+        try:
+            sig = _file_sig(drive, m, fast=False)  # 항상 확정 해시
+        except Exception as e:
+            done += 1
+            pct = int(done/max(total,1)*100)
+            prog.progress(pct, text=f"해시 실패 스킵: {name} → {e}")
+            info_line.error(f"해시 실패: {name} → {e}")
+            last_tick = time.time()
+            time.sleep(YIELD_SLEEP)
+            continue
+
+        prev = known.get(fid)
+        if not (prev and prev.get("sig")==sig):
+            if (name, sig) not in name_sig_set:
+                new_or_changed += 1
+                known[fid] = {"name": name, "sig": sig, "processed_at": None}
+                name_sig_set.add((name, sig))
+            else:
+                known[fid] = {"name": name, "sig": sig, "processed_at": prev.get("processed_at") if prev else _ts()}
+
+        done += 1
+        pct = int(done/max(total,1)*100)
+        elapsed = int(time.time()-started)
+        mm, ss_ = divmod(elapsed, 60)
+        prog.progress(pct, text=f"{pct}% | {done}/{total} | {mm:02d}:{ss_:02d} | {name}")
+        info_line.info(f"진행: {done}/{total} (신규/변경 {new_or_changed})")
+        # 워치독(지연 감지)
+        if time.time() - last_tick > STALL_WARN_SEC:
+            delay_line.warning("⏱ 지연(네트워크/쿼터) 발생 가능 — 계속 대기 중…")
+        else:
+            delay_line.empty()
+        last_tick = time.time()
+        time.sleep(YIELD_SLEEP)
+
+    # 결과 저장
+    manifest["items"] = known; manifest["pending_full"] = []; manifest["updated_at"] = _ts()
+    _save_manifest(drive, manifest, mid)
+
+    if ss.get("_admin_scan_cancel"):
+        ss["_admin_scan_cancel"] = False
+        st.stop()
+
+    if new_or_changed == 0:
+        with box: st.success("완료 — 신규/변경 없음 (모두 최신).")
+        return False, 0
+
+    # 파이프라인 예약
+    ss["_auto_booklets_pending"] = True
+    ss["_auto_topics_text"] = topics_text
+    ss["_auto_booklet_title"] = title
+    ss["_auto_make_citations"] = cite
+    ss.prep_both_done = False; ss.prep_both_running = True; ss.index_job = None
+    with box: st.success(f"완료 — 신규/변경 {new_or_changed}개 → 인덱싱/최적화 시작")
+    st.rerun()
+    return True, new_or_changed
+
+# ================= 10) 업로드(원본→prepared) ============
 with st.expander("📤 관리자: 자료 업로드 (원본→prepared 저장)", expanded=False):
     st.caption("원본은 prepared/에 저장됩니다. (옵션 ON) 업로드 후 자동으로 문법 소책자(최적화본)를 Drive에 저장합니다.")
-
     auto_title = st.toggle("AI 제목 자동 생성(업로드 후 이름 바꾸기)", value=True)
     title_hint = st.text_input("제목 힌트(선택)", placeholder="예: 고1 영어 문법 / 학원 교재 / 중간고사 대비 등")
-
     auto_optimize = st.toggle("업로드 후 자동 최적화(문법 소책자 Drive 저장)", value=True)
+
     default_topics = [
         "Parts of Speech(품사)","Articles(관사)","Nouns & Pronouns(명사/대명사)",
         "Verbs & Tenses(시제)","Modals(조동사)","Passive(수동태)","Gerunds & Infinitives(동명사/부정사)",
@@ -499,10 +639,9 @@ with st.expander("📤 관리자: 자료 업로드 (원본→prepared 저장)", 
         except Exception as e:
             prog.progress(0, text="오류"); status_area.error(f"처리 실패: {e}")
 
-# ============= 6.6) 📡 prepared 폴더 감시(Drive 직접 투입 → 자동 최적화) ========
+# ================= 11) prepared 감시 UI ================
 with st.expander("📡 prepared 폴더 감시(Drive 직접 투입 → 최적화/스킵)", expanded=False):
-    st.caption("prepared/ 에 파일을 직접 넣어도 감지하여 자동으로 인덱싱 및 문법 소책자(최적화본)를 생성합니다. "
-               "동일 제목+동일 내용은 자동 스킵. 처리 이력은 prepared_manifest.json에 저장.")
+    st.caption("prepared/ 에 파일을 직접 넣어도 자동 감지합니다. (관리자는 첫 방문 시 완전 스캔)")
     ss["_watch_on_load"] = st.toggle("페이지 열릴 때 자동 스캔", value=ss["_watch_on_load"])
     ss["_watch_rename_title"] = st.toggle("감시 시에도 AI 제목 자동 정리(선택)", value=ss["_watch_rename_title"])
 
@@ -512,9 +651,12 @@ with st.expander("📡 prepared 폴더 감시(Drive 직접 투입 → 최적화/
     cite_watch = st.checkbox("참고자료 섹션 포함", value=ss.get("_auto_make_citations", True))
 
     if st.button("📡 지금 스캔 & 최적화", use_container_width=True):
-        watch_scan_and_schedule(topics_watch, title_watch, cite_watch, ss["_watch_rename_title"])
+        if IS_ADMIN:
+            admin_full_scan_and_schedule(topics_watch, title_watch, cite_watch, ss["_watch_rename_title"])
+        else:
+            watch_scan_and_schedule(topics_watch, title_watch, cite_watch, ss["_watch_rename_title"])
 
-# ============= 7) 인덱싱 보고서 ================================================
+# ================= 12) 인덱싱 보고서 ===================
 rep = ss.get("indexing_report")
 if rep:
     with st.expander("🧾 인덱싱 보고서 (스킵된 파일 보기)", expanded=False):
@@ -525,7 +667,7 @@ if rep:
         if skipped: st.dataframe(pd.DataFrame(skipped), use_container_width=True, hide_index=True)
         else: st.caption("스킵된 파일이 없습니다 🎉")
 
-# ============= 8) 두뇌 준비(증분 인덱싱 · 중간취소/재개 + 자동 최적화 훅) =======
+# ================= 13) 두뇌 준비(인덱싱) ===============
 st.markdown("---"); st.subheader("🧠 두뇌 준비 — 저장본 로드 ↔ 변경 시 증분 인덱싱 (중간 취소/재개)")
 
 c_g, c_o = st.columns(2)
@@ -538,6 +680,7 @@ def _render_progress(slot_bar, slot_msg, pct: int, msg: str | None = None):
         f"<div class='gp-wrap'><div class='gp-fill' style='width:{p}%'></div><div class='gp-label'>{p}%</div></div>",
         unsafe_allow_html=True)
     if msg is not None: slot_msg.markdown(f"<div class='gp-msg'>{msg}</div>", unsafe_allow_html=True)
+
 def _is_cancelled() -> bool: return bool(ss.get("prep_cancel_requested", False))
 
 from src.rag_engine import (
@@ -629,7 +772,7 @@ def run_prepare_both_step():
     except Exception as e:
         _render_progress(o_bar, o_msg, 100, f"ChatGPT 준비 실패: {e}")
 
-    # 4) 업로드/감시 예약된 자동 최적화 실행
+    # 4) 자동 소책자(예약 시)
     if ss.get("_auto_booklets_pending"):
         try:
             topics = [t.strip() for t in ss.get("_auto_topics_text","").splitlines() if t.strip()]
@@ -660,7 +803,6 @@ with left:
 with right:
     cancel_clicked = st.button("⛔ 준비 취소", key="cancel_prepare", use_container_width=True, type="secondary",
                                disabled=not ss.prep_both_running)
-
 from src.rag_engine import cancel_index_builder
 if cancel_clicked and ss.prep_both_running:
     ss.prep_cancel_requested = True
@@ -669,17 +811,19 @@ if cancel_clicked and ss.prep_both_running:
 if clicked and not (ss.prep_both_running or ss.prep_both_done):
     ss.prep_cancel_requested = False; ss.prep_both_running = True; ss.index_job = None; st.rerun()
 
-# ⏱ 자동 스캔: 페이지 로드시 1회(무한 rerun 방지)
+# 자동 스캔: 페이지 최초 1회
 if ss["_watch_on_load"] and not ss["_watch_ran_once"] and not ss.prep_both_running:
-    ss["_watch_ran_once"] = True   # 먼저 True로 세팅하여 rerun 루프 차단
+    ss["_watch_ran_once"] = True
     topics0 = ss.get("_auto_topics_text") or "Verbs & Tenses(시제)\nPassive(수동태)\nConditionals(조건문)"
     title0  = ss.get("_auto_booklet_title","Grammar Booklets")
     cite0   = bool(ss.get("_auto_make_citations", True))
     try:
-        # 감지되면 내부에서 st.rerun() 호출 → 여기서는 추가 rerun 불필요
-        watch_scan_and_schedule(topics0, title0, cite0, ss["_watch_rename_title"])
+        if IS_ADMIN and not ss.get("_admin_initial_fullscan_done", False):
+            ss["_admin_initial_fullscan_done"] = True
+            admin_full_scan_and_schedule(topics0, title0, cite0, ss["_watch_rename_title"])
+        else:
+            watch_scan_and_schedule(topics0, title0, cite0, ss["_watch_rename_title"])
     except Exception as e:
-        # 에러가 떠도 앱이 멈추지 않도록 처리
         st.warning(f"초기 자동 스캔 실패: {e}")
 
 if ss.prep_both_running:
@@ -687,9 +831,9 @@ if ss.prep_both_running:
 
 st.caption("준비 버튼을 다시 활성화하려면 아래 재설정 버튼을 누르세요.")
 if st.button("🔧 재설정(버튼 다시 활성화)", disabled=not ss.prep_both_done):
-    ss.prep_both_done = False; ss["_watch_ran_once"] = False; st.rerun()
+    ss.prep_both_done = False; ss["_watch_ran_once"] = False; ss["_admin_initial_fullscan_done"] = False; st.rerun()
 
-# ============= 9) 대화 UI (그룹토론) ===========================================
+# ================= 14) 그룹토론 UI =====================
 st.markdown("---")
 st.subheader("💬 그룹토론 — 학생 ↔ 🤖Gemini(친절/꼼꼼) ↔ 🤖ChatGPT(유머러스/보완)")
 
@@ -731,7 +875,6 @@ CHATGPT_STYLE = ("당신은 유머러스하지만 정확한 동료 교사입니�
                  "빠진 부분을 보완/교정하고 마지막에 <최종 정리>로 요약하세요. 과한 농담 금지.")
 mode = st.radio("학습 모드", ["💬 이유문법 설명", "🔎 구문 분석", "📚 독해 및 요약"], horizontal=True, key="mode_select")
 
-# 서비스계정 JSONL 저장 (chat_log/)
 from src import chat_store
 from src.drive_log import get_chatlog_folder_id, save_chatlog_markdown_oauth
 def _jsonl_log(items):
@@ -754,7 +897,6 @@ if user_input:
     with st.chat_message("user"): st.markdown(user_input)
     _jsonl_log([chat_store.make_entry(ss.session_id, "user", "user", user_input, mode, model="user")])
 
-    # Gemini 1차
     from src.rag_engine import get_text_answer, llm_complete
     with st.spinner("🤖 Gemini 선생님이 먼저 답합니다…"):
         prev_ctx = _build_context(ss.messages[:-1], limit_pairs=2, max_chars=2000)
@@ -764,10 +906,8 @@ if user_input:
     content_g = f"**🤖 Gemini**\n\n{ans_g}"
     ss.messages.append({"role":"assistant","content":content_g})
     with st.chat_message("assistant"): st.markdown(content_g)
-
     _jsonl_log([chat_store.make_entry(ss.session_id, "assistant", "Gemini", content_g, mode, model=getattr(settings,"LLM_MODEL","gemini"))])
 
-    # ChatGPT 보완(있으면)
     if "qe_openai" in ss:
         review_directive = ("역할: 동료 AI 영어교사\n"
             "목표: [이전 대화], [학생 질문], [동료의 1차 답변]을 읽고 사실오류/빠진점/모호함을 보완.\n"
@@ -787,7 +927,6 @@ if user_input:
         with st.chat_message("assistant"):
             st.info("ChatGPT 키가 없어 Gemini만 응답했습니다. OPENAI_API_KEY를 추가하면 보완/검증이 활성화됩니다.")
 
-    # OAuth Markdown 저장(내 드라이브)
     if ss.auto_save_chatlog and ss.messages:
         try:
             if is_signed_in():
