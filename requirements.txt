@@ -18,3 +18,5 @@ google-genai
 protobuf<5
 
 pypdf
+pydantic-settings>=2.2,<3
+pydantic>=2.4,<3
