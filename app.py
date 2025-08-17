@@ -125,18 +125,28 @@ try:
     from src.rag_engine import (
         smoke_test_drive,
         preview_drive_files,
-        drive_diagnostics,
+        drive_diagnostics,  # ← 진단 함수 (누락 필드/파싱 문제를 화면에 표시)
     )
+except Exception:
+    st.error("`src.rag_engine` 임포트 실패")
+    import traceback, os as _os
+    st.write("파일 존재 여부:", _os.path.exists("src/rag_engine.py"))
+    with st.expander("임포트 스택", expanded=True):
+        st.code(traceback.format_exc())
+    st.stop()
 
-ok, headline, details = drive_diagnostics(settings.GDRIVE_FOLDER_ID)
-if ok:
-    st.success(headline)
-else:
-    st.error(headline)
-
-with st.expander("🔎 연결/권한 진단 상세", expanded=not ok):
-    for line in details:
-        st.write("• ", line)
+# secrets 진단(서비스계정 JSON이 dict로 파싱됐는지, 필수 키 누락 여부)
+try:
+    from src.config import settings
+    ok, details = drive_diagnostics(settings.GDRIVE_SERVICE_ACCOUNT_JSON)
+    if ok:
+        st.success("🔎 Service Account JSON OK")
+    else:
+        st.warning("🔎 Service Account JSON 문제 감지")
+        with st.expander("자세히 보기", expanded=True):
+            st.code(details)
+except Exception as e:
+    st.warning(f"진단 중 예외: {e}")
 
 # (원하시면 '폴더 파일 미리보기' 버튼은 기존 코드 유지)
 # ─────────────────────────────────────────────────────────────────
