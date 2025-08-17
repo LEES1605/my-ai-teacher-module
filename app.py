@@ -156,79 +156,217 @@ with colR:
         st.warning(msg)
 
 # ============= 6.5) 📤 관리자: 자료 업로드 (원본 → prepared 저장) ===============
+# ============= 6.5) 📤 관리자: 자료 업로드 (원본 → prepared 저장) ===============
 with st.expander("📤 관리자: 자료 업로드 (원본→prepared 저장)", expanded=False):
-    st.caption("여러 PDF를 한 번에 업로드합니다. 원본은 prepared 폴더에 저장되며, 텍스트 추출물은 인덱스 캐시에만 저장됩니다.")
+    st.caption(
+        "원본 파일을 prepared 폴더에 저장합니다. 텍스트 추출물은 인덱스 캐시에만 저장됩니다.\n"
+        "로컬 파일 업로드 + Google Docs/Slides/Sheets URL 가져오기 모두 지원합니다."
+    )
+
+    # ── (A) 로컬 파일 업로드: 여러 형식 지원 ─────────────────────────────────────
+    SUPPORTED_TYPES = [
+        "pdf", "docx", "doc", "pptx", "ppt", "md", "txt", "rtf", "odt", "html", "epub",
+        # 필요 시 아래도 허용 (인덱싱은 건너뛸 수 있음)
+        "xlsx", "xls", "csv"
+    ]
     files = st.file_uploader(
-        "PDF 파일을 선택하세요 (여러 개 가능)",
-        type=["pdf"],                 # ← 필요 시 ["pdf","docx","md","txt","pptx"]로 확장 가능
+        "로컬 파일 선택 (여러 개 가능)",
+        type=SUPPORTED_TYPES,
         accept_multiple_files=True
     )
 
-    # 진행 상태 표시용 위젯
+    # ── (B) Google Docs/Slides/Sheets URL로 가져오기 (줄바꿈으로 여러 개) ───────
+    gdocs_urls = st.text_area(
+        "Google Docs/Slides/Sheets URL 붙여넣기 (여러 개면 줄바꿈으로 구분)",
+        placeholder="예) https://docs.google.com/document/d/............/edit\nhttps://docs.google.com/presentation/d/............/edit",
+        height=96
+    )
+
+    # 진행/상태 영역
     prog = st.progress(0, text="대기 중…")
     status_area = st.empty()
     result_area = st.empty()
 
-    if files and st.button("업로드 → prepared", type="primary"):
+    def _ts(): 
+        import time
+        return time.strftime("%Y%m%d_%H%M%S")
+
+    def _safe_name(name: str) -> str:
+        import re
+        return re.sub(r"[^\w\-. ]", "_", name).strip() or "untitled"
+
+    def _guess_mime_by_ext(fname: str) -> str:
+        ext = (fname.rsplit(".", 1)[-1] if "." in fname else "").lower()
+        MIMES = {
+            "pdf":  "application/pdf",
+            "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "doc":  "application/msword",
+            "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            "ppt":  "application/vnd.ms-powerpoint",
+            "md":   "text/markdown",
+            "txt":  "text/plain",
+            "rtf":  "application/rtf",
+            "odt":  "application/vnd.oasis.opendocument.text",
+            "html": "text/html",
+            "epub": "application/epub+zip",
+            "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "xls":  "application/vnd.ms-excel",
+            "csv":  "text/csv",
+        }
+        return MIMES.get(ext, "application/octet-stream")
+
+    def _parse_gdoc_id(s: str) -> str | None:
+        import re
+        s = s.strip()
+        if not s:
+            return None
+        # /d/<id>, id=<id>, 또는 ID만
+        for pat in [r"/d/([-\w]{15,})", r"[?&]id=([-\w]{15,})$", r"^([-\w]{15,})$"]:
+            m = re.search(pat, s)
+            if m:
+                return m.group(1)
+        return None
+
+    if st.button("업로드/가져오기 → prepared", type="primary"):
+        import io, time
+        from googleapiclient.discovery import build
+        from googleapiclient.http import MediaIoBaseUpload
+        from googleapiclient.errors import HttpError
+        from src.rag_engine import _normalize_sa
+        from src.config import settings
+        from src.google_oauth import is_signed_in, build_drive_service
+
+        # 0) 서비스계정 Drive 클라이언트(쓰기용) + (가능하면) OAuth 클라이언트(읽기/복사용)
+        creds_sa = _normalize_sa(settings.GDRIVE_SERVICE_ACCOUNT_JSON)
+        drive_sa = build("drive", "v3", credentials=creds_sa)
+
+        drive_oauth = build_drive_service() if is_signed_in() else None
+
+        rows, done, total_steps = [], 0, 1
+        # 파일 업로드 step 수 계산
+        if files: 
+            total_steps += len(files)
+        # gdocs url들 step 수 계산
+        url_list = [u.strip() for u in (gdocs_urls.splitlines() if gdocs_urls else []) if u.strip()]
+        if url_list:
+            total_steps += len(url_list)
+
+        def _tick(msg):
+            nonlocal done
+            done += 1
+            pct = int(done / max(total_steps, 1) * 100)
+            prog.progress(pct, text=msg)
+            status_area.info(msg)
+
         try:
-            import io, re, time
-            from googleapiclient.discovery import build
-            from googleapiclient.http import MediaIoBaseUpload
-            from src.rag_engine import _normalize_sa
-            from src.config import settings
+            # 1) 로컬 파일 업로드 (원본 그대로 저장)
+            if files:
+                for f in files:
+                    data = f.read()
+                    buf = io.BytesIO(data)
+                    base = _safe_name(f.name)
+                    name = f"{_ts()}__{base}"
+                    mime = _guess_mime_by_ext(base)
 
-            # 0) 서비스계정으로 Drive 클라이언트 생성
-            creds = _normalize_sa(settings.GDRIVE_SERVICE_ACCOUNT_JSON)
-            drive = build("drive", "v3", credentials=creds)
+                    media = MediaIoBaseUpload(buf, mimetype=mime, resumable=False)
+                    meta = {"name": name, "parents": [settings.GDRIVE_FOLDER_ID]}
+                    _tick(f"업로드 중: {name}")
+                    res = drive_sa.files().create(body=meta, media_body=media, fields="id,webViewLink").execute()
+                    rows.append({"name": name, "open": res.get("webViewLink")})
+                    time.sleep(0.05)
 
-            # 1) 업로드 루프
-            total = len(files)
-            rows = []       # 결과표
-            uploaded = 0
+            # 2) Google Docs/Slides/Sheets URL → PDF로 내보내 저장
+            #    - 우선 OAuth(있으면)로 원본 읽기/내보내기
+            #    - 없으면 서비스계정으로 접근(문서가 서비스계정에 공유되어 있어야 함)
+            for raw in url_list:
+                file_id = _parse_gdoc_id(raw)
+                if not file_id:
+                    rows.append({"name": f"(잘못된 링크) {raw[:40]}…", "open": ""})
+                    _tick("잘못된 링크 건너뜀")
+                    continue
 
-            for i, f in enumerate(files, start=1):
-                # (1) 파일 읽기
-                data = f.read()
-                buf = io.BytesIO(data)
+                # 어떤 서비스로 읽을지 결정
+                drive_ro = drive_oauth or drive_sa  # 로그인되어 있으면 OAuth 우선
+                try:
+                    meta = drive_ro.files().get(fileId=file_id, fields="id,name,mimeType").execute()
+                    name0 = meta.get("name", "untitled")
+                    mtype = meta.get("mimeType", "")
+                except HttpError as he:
+                    # OAuth가 없거나 권한 거부 시: 서비스계정으로 재시도
+                    if drive_ro is drive_oauth:
+                        try:
+                            meta = drive_sa.files().get(fileId=file_id, fields="id,name,mimeType").execute()
+                            name0 = meta.get("name", "untitled")
+                            mtype = meta.get("mimeType", "")
+                            drive_ro = drive_sa
+                        except Exception as e2:
+                            rows.append({"name": f"(접근 실패) {raw[:40]}…", "open": f"{type(e2).__name__}: 권한 필요"})
+                            _tick("접근 실패(공유 필요)")
+                            continue
+                    else:
+                        rows.append({"name": f"(접근 실패) {raw[:40]}…", "open": f"{type(he).__name__}: 권한 필요"})
+                        _tick("접근 실패(공유 필요)")
+                        continue
 
-                # (2) 파일명: 타임스탬프__원본이름 (정렬/중복 방지)
-                ts = time.strftime("%Y%m%d_%H%M%S")
-                base = re.sub(r"[^\w\-. ]", "_", f.name)
-                name = f"{ts}__{base}"
+                # Google-native 문서만 export; 그 외는 copy 시도
+                GOOGLE_NATIVE = {
+                    "application/vnd.google-apps.document": ("application/pdf", ".pdf"),
+                    "application/vnd.google-apps.presentation": ("application/pdf", ".pdf"),
+                    "application/vnd.google-apps.spreadsheet": ("application/pdf", ".pdf"),
+                    # 필요하면 spreadsheet는 CSV도 지원 가능: ("text/csv", ".csv")
+                }
 
-                # (3) 업로드
-                prog.progress(int(i / total * 100), text=f"업로드 중… ({i}/{total})")
-                status_area.info(f"업로드 중: {name}")
+                if mtype in GOOGLE_NATIVE:
+                    export_mime, ext = GOOGLE_NATIVE[mtype]
+                    _tick(f"내보내는 중: {name0}{ext} (Google 문서)")
+                    data = drive_ro.files().export(fileId=file_id, mimeType=export_mime).execute()
+                    buf = io.BytesIO(data)
+                    name = f"{_ts()}__{_safe_name(name0)}{ext}"
+                    media = MediaIoBaseUpload(buf, mimetype=export_mime, resumable=False)
+                    meta2 = {"name": name, "parents": [settings.GDRIVE_FOLDER_ID]}
+                    res2 = drive_sa.files().create(body=meta2, media_body=media, fields="id,webViewLink").execute()
+                    rows.append({"name": name, "open": res2.get("webViewLink")})
+                else:
+                    # 네이티브가 아닌 경우: prepared로 복사 시도
+                    _tick(f"복사 중: {name0} (파일)")
+                    body = {"name": f"{_ts()}__{_safe_name(name0)}", "parents": [settings.GDRIVE_FOLDER_ID]}
+                    try:
+                        # 서비스계정으로 먼저 시도(편집 권한이 있으면 성공)
+                        res3 = drive_sa.files().copy(fileId=file_id, body=body, fields="id,webViewLink").execute()
+                    except HttpError:
+                        # 서비스계정이 안되면 OAuth로 시도(로그인 필요)
+                        if drive_oauth:
+                            res3 = drive_oauth.files().copy(fileId=file_id, body=body, fields="id,webViewLink").execute()
+                        else:
+                            rows.append({"name": f"(복사 실패) {name0}", "open": "권한 부족 — 서비스계정에 공유하거나 OAuth 로그인"})
+                            continue
+                    rows.append({"name": body["name"], "open": res3.get("webViewLink")})
+                    time.sleep(0.05)
 
-                media = MediaIoBaseUpload(buf, mimetype="application/pdf", resumable=False)
-                meta = {"name": name, "parents": [settings.GDRIVE_FOLDER_ID]}
-
-                res = drive.files().create(body=meta, media_body=media, fields="id,webViewLink").execute()
-                rows.append({"name": name, "open": res.get("webViewLink")})
-                uploaded += 1
-
-                # 드라이브 API rate-limit 완화(가벼운 텀)
-                time.sleep(0.1)
-
-            # 2) 요약 출력
+            # 3) 결과 표시
             prog.progress(100, text="완료")
-            status_area.success(f"{uploaded}개 업로드 완료 (prepared)")
-
+            status_area.success(f"총 {len(rows)}개 항목 처리 완료 (prepared)")
             if rows:
+                import pandas as pd
                 df = pd.DataFrame(rows)
                 result_area.dataframe(
                     df, use_container_width=True, hide_index=True,
-                    column_config={"name": st.column_config.TextColumn("파일명"),
-                                   "open": st.column_config.LinkColumn("열기", display_text="열기")}
+                    column_config={
+                        "name": st.column_config.TextColumn("파일명"),
+                        "open": st.column_config.LinkColumn("열기", display_text="열기")
+                    }
                 )
-            st.toast("업로드 완료 — 변경 사항은 인덱싱 시 반영됩니다.", icon="✅")
+            st.toast("업로드/가져오기 완료 — 변경 사항은 인덱싱 시 반영됩니다.", icon="✅")
 
-            # 3) 인덱싱을 다시 돌릴 수 있게 준비 버튼 재활성화
+            # 4) 인덱싱 다시 돌릴 수 있도록 준비 버튼 재활성화
             ss.prep_both_done = False
 
         except Exception as e:
             prog.progress(0, text="오류")
-            status_area.error(f"업로드 실패: {e}")
+            status_area.error(f"처리 실패: {e}")
+# ==============================================================================
+
+# ============= 7) 인덱싱 보고서(스킵된 파일 포함) ===============================
 
 # ==============================================================================
 
