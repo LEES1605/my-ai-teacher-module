@@ -144,7 +144,7 @@ if is_admin:
             st.session_state["response_mode"] = mode_sel
             st.success("RAG/LLM 설정이 저장되었습니다. (다음 쿼리부터 반영)")
 
-    # (신규) 최적화 옵션 UI
+    # 최적화 옵션 UI (이전과 동일)
     with st.expander("🧩 최적화 설정(전처리/청킹/중복제거)", expanded=True):
         c1, c2, c3 = st.columns(3)
         with c1:
@@ -220,7 +220,6 @@ if is_admin:
                         st.exception(e)
 
     with st.expander("🔎 인덱스 상태 진단", expanded=False):
-        # 간단 진단
         st.write(f"• 로컬 저장 경로: `{PERSIST_DIR}` → {'존재' if os.path.isdir(PERSIST_DIR) else '없음'}")
         st.write(f"• 체크포인트: `{CHECKPOINT_PATH}` → {'존재' if os.path.exists(CHECKPOINT_PATH) else '없음'}")
         render_quality_report_view()
@@ -234,11 +233,11 @@ def main():
 
     # 두뇌가 없고, 관리자만 준비 UI를 봄
     if is_admin:
-        st.info("AI 교사를 준비하려면 아래 버튼을 누르세요. (체크포인트/전처리/청킹 포함)")
+        st.info("AI 교사를 준비하려면 아래 버튼을 누르세요. (체크포인트/중지 버튼 지원)")
 
         if st.button("🧠 AI 두뇌 준비 시작하기"):
             # 진행 UI 슬롯
-            stepper_slot = st.empty(); bar_slot = st.empty(); msg_slot = st.empty()
+            stepper_slot = st.empty(); bar_slot = st.empty(); msg_slot = st.empty(); ctrl_slot = st.empty()
 
             steps = [("check","드라이브 변경 확인"),("init","Drive 리더 초기화"),
                      ("list","문서 목록 불러오는 중"),("index","인덱스 생성"),("save","두뇌 저장")]
@@ -260,6 +259,14 @@ def main():
             _set_active("check"); render_progress_bar(bar_slot, 0)
             msg_slot.markdown("<div class='gp-msg'>두뇌 준비를 시작합니다…</div>", unsafe_allow_html=True)
 
+            # (신규) 중지 플래그 초기화 및 버튼
+            st.session_state["stop_requested"] = False
+            with ctrl_slot.container():
+                st.caption("진행 제어")
+                if st.button("🛑 학습 중지", type="secondary"):
+                    st.session_state["stop_requested"] = True
+                    st.info("중지 요청됨 — 현재 파일까지 마무리하고 곧 멈춥니다.")
+
             st.session_state["_gp_pct"] = 0
             def update_pct(pct:int, msg:str|None=None):
                 st.session_state["_gp_pct"] = max(0, min(100, int(pct)))
@@ -275,6 +282,9 @@ def main():
                 elif "완료" in text: _set_done_all()
                 msg_slot.markdown(f"<div class='gp-msg'>{text}</div>", unsafe_allow_html=True)
 
+            def should_stop() -> bool:
+                return bool(st.session_state.get("stop_requested", False))
+
             # 1) LLM/Embedding 준비
             init_llama_settings(
                 api_key=settings.GEMINI_API_KEY.get_secret_value(),
@@ -282,22 +292,29 @@ def main():
                 embed_model=settings.EMBED_MODEL,
                 temperature=float(st.session_state.get("temperature", 0.0)),
             )
-            # 2) 인덱스 준비/빌드(최적화 파이프라인 내장)
+            # 2) 인덱스 준비/빌드(중지 신호 전달)
             index = get_or_build_index(
                 update_pct=update_pct, update_msg=update_msg,
                 gdrive_folder_id=settings.GDRIVE_FOLDER_ID,
                 raw_sa=settings.GDRIVE_SERVICE_ACCOUNT_JSON,
                 persist_dir=PERSIST_DIR, manifest_path=MANIFEST_PATH,
+                should_stop=should_stop
             )
             # 3) 엔진 연결
             st.session_state.query_engine = index.as_query_engine(
                 response_mode=st.session_state.get("response_mode", settings.RESPONSE_MODE),
                 similarity_top_k=int(st.session_state.get("similarity_top_k", settings.SIMILARITY_TOP_K)),
             )
-            update_pct(100, "완료!"); time.sleep(0.4)
 
-            # 4) 자동 백업(+오래된 백업 정리)
-            if settings.AUTO_BACKUP_TO_DRIVE:
+            # 완료/중지 상태 메시지
+            if st.session_state.get("stop_requested"):
+                st.warning("학습을 중지했습니다. 다음 실행 시 **중단 지점 다음 파일부터** 이어서 학습합니다.")
+            else:
+                update_pct(100, "완료!")
+                time.sleep(0.4)
+
+            # 4) 자동 백업(+오래된 백업 정리) — '완료한 경우'에만 수행
+            if settings.AUTO_BACKUP_TO_DRIVE and not st.session_state.get("stop_requested"):
                 try:
                     creds = _validate_sa(_normalize_sa(settings.GDRIVE_SERVICE_ACCOUNT_JSON))
                     dest = settings.BACKUP_FOLDER_ID or settings.GDRIVE_FOLDER_ID
@@ -312,7 +329,8 @@ def main():
                     with st.expander("백업 오류 보기"):
                         st.exception(e)
 
-            stepper_slot.empty(); bar_slot.empty(); msg_slot.empty()
+            # 진행 UI 정리 및 재실행
+            stepper_slot.empty(); bar_slot.empty(); msg_slot.empty(); ctrl_slot.empty()
             st.rerun()
         return
 
