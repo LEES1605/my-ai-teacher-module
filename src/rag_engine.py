@@ -4,8 +4,7 @@ import os, json, shutil
 from typing import Callable, Any, Mapping
 
 import streamlit as st
-
-from src.config import settings
+from src.config import settings  # 설정 접근(브랜드/모델 등)
 
 # === LLM/Embedding 설정(지연 초기화) ==========================================
 def init_llama_settings(api_key: str, llm_model: str, embed_model: str, temperature: float = 0.0):
