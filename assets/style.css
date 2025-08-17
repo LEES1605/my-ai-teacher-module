@@ -1,17 +1,11 @@
 /* assets/style.css */
-/* ────────────────────────────────────────────────────────────────────────────
-   전역 스타일
-   - 브랜드 변수: :root --brand, --title-size, --logo-h 는 파이썬에서 주입
-   - Streamlit의 내부 클래스 대신 data-testid 기반 선택자 위주 사용
-   ─────────────────────────────────────────────────────────────────────────── */
-
 :root{
   --brand:#9067C6;
   --title-size:3rem;
   --logo-h:110px;
 }
 
-/* 헤더 영역 */
+/* 헤더 */
 .brand-header{
   display:flex;
   align-items:center;
@@ -39,7 +33,7 @@
   font-weight: 800;
 }
 
-/* 반응형: 좁은 화면에서 타이틀 크기/정렬 조정 */
+/* 반응형 */
 @media (max-width: 980px){
   .brand-title{ font-size: calc(var(--title-size) * 0.84); }
 }
@@ -49,15 +43,15 @@
   .brand-title{ font-size: calc(var(--title-size) * 0.74); }
 }
 
-/* 메인 컨테이너 여백 살짝 축소 */
+/* 본문 여백 */
 [data-testid="stAppViewContainer"] .main .block-container{
   padding-top: 1.2rem;
 }
 
-/* Chat input 가독성 */
+/* Chat 메시지 간격 */
 [data-testid="stChatMessage"] p{ margin-bottom: .6rem; }
 
-/* 진행바(보조): ui.ensure_progress_css 가 핵심을 주입함. 여기서는 미묘한 그림자만 */
+/* 진행바(보조) */
 .gp-bar{
   box-shadow: inset 0 0 0 1px rgba(0,0,0,0.05);
   background: rgba(0,0,0,0.06);
@@ -66,12 +60,10 @@
   background: var(--brand);
 }
 
-/* Streamlit 기본 헤더 배경 제거 */
-[data-testid="stHeader"]{
-  background: transparent;
-}
+/* Streamlit 헤더 배경 제거 */
+[data-testid="stHeader"]{ background: transparent; }
 
-/* 버튼 모서리/그림자 소폭 */
+/* 버튼 미세 스타일 */
 button[kind="primary"], .stButton>button{
   border-radius: 10px;
   box-shadow: 0 1px 0 rgba(0,0,0,0.04);
