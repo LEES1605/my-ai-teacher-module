@@ -227,28 +227,53 @@ def _save_signature(persist_dir: str, sig: dict) -> None:
         json.dump(sig, f, ensure_ascii=False, indent=2)
 
 
+# rag_engine.py 내부 -----------------------------------------------
+
 def _insert_docs(index, docs):
     """
-    LlamaIndex 버전마다 API가 다른 문제를 흡수:
-      - insert_documents(docs)
-      - insert_nodes(nodes)
-      - insert(docs_or_nodes)
+    LlamaIndex 버전 차이를 흡수해 안전하게 삽입한다.
+    - docs 가 list/tuple 이든 단일 문서든 모두 처리
+    - insert_documents / insert_nodes / insert 를 순차 폴백
     """
-    # 1) try: insert_documents
+    # 1) 리스트 형태로 정규화
+    if isinstance(docs, (list, tuple)):
+        doc_list = list(docs)
+    else:
+        doc_list = [docs]
+
+    # 2) 1차: 최신 API (list 한 번에)
     try:
-        return index.insert_documents(docs)
+        if hasattr(index, "insert_documents"):
+            return index.insert_documents(doc_list)
     except Exception:
         pass
-    # 2) try: insert_nodes
+
+    # 3) 2차: 노드로 변환해서 삽입
     try:
-        return index.insert_nodes(docs)
+        from llama_index.core.node_parser import SimpleNodeParser
+        parser = SimpleNodeParser.from_defaults()
+        nodes = parser.get_nodes_from_documents(doc_list)
+
+        if hasattr(index, "insert_nodes"):
+            return index.insert_nodes(nodes)
+
+        # 구버전: 노드 개별 insert
+        if hasattr(index, "insert"):
+            for n in nodes:
+                index.insert(n)
+            return
     except Exception:
         pass
-    # 3) fallback: insert
-    try:
-        return index.insert(docs)
-    except Exception as e:
-        raise e
+
+    # 4) 3차: 문서 개별 insert (구버전 대응)
+    if hasattr(index, "insert"):
+        for d in doc_list:
+            index.insert(d)
+        return
+
+    # 5) 그래도 안 되면 마지막 예외
+    raise RuntimeError("Index insert failed: no compatible insert* method found")
+
 
 
 # ============================ Step Job 객체 ============================
