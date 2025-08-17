@@ -95,7 +95,12 @@ from src.config import settings
 from src.rag_engine import smoke_test_drive, preview_drive_files, drive_diagnostics
 try:
     ok_sa, head_sa, details_sa = drive_diagnostics(settings.GDRIVE_FOLDER_ID)
-    st.success(head_sa) if ok_sa else st.warning(head_sa)
+    # FIX: 삼항식이 DeltaGenerator 반환 → 명시적 if/else로 변경(문서(help) 렌더 방지)
+    if ok_sa:
+        st.success(head_sa)
+    else:
+        st.warning(head_sa)
+
     with st.expander("서비스계정 JSON 진단 상세", expanded=not ok_sa):
         st.code("\n".join(details_sa), language="text")
 except Exception as e:
@@ -120,9 +125,14 @@ with colL:
             st.success(f"총 {len(rows)}개 항목 표시 (최신 10개 기준).")
         elif ok: st.info("폴더에 파일이 없거나 접근할 수 없습니다.")
         else:    st.error(msg)
+
 with colR:
     ok, msg = smoke_test_drive()
-    st.success(msg) if ok else st.warning(msg)
+    # FIX: 여기서도 삼항식 제거
+    if ok:
+        st.success(msg)
+    else:
+        st.warning(msg)
 
 # ------------------------------------------------------------------------------
 # 공통 유틸
@@ -308,7 +318,7 @@ with st.expander("📤 관리자: 자료 업로드 (원본→prepared 저장)", 
         url_list = [u.strip() for u in (gdocs_urls.splitlines() if gdocs_urls else []) if u.strip()]
         if url_list: total += len(url_list)
 
-        # ✅ nonlocal 없이 진행률을 저장하는 작은 상태 dict
+        # nonlocal 없이 dict로 진행률 저장
         progress_state = {"done": 0, "total": total}
         def _tick(msg: str):
             progress_state["done"] += 1
@@ -343,8 +353,7 @@ with st.expander("📤 관리자: 자료 업로드 (원본→prepared 저장)", 
             for raw in url_list:
                 file_id = _parse_gdoc_id(raw)
                 if not file_id:
-                    _tick("잘못된 링크 건너뜀")
-                    continue
+                    _tick("잘못된 링크 건너뜀"); continue
 
                 drive_ro = drive_oauth or drive_sa
                 try:
@@ -357,11 +366,9 @@ with st.expander("📤 관리자: 자료 업로드 (원본→prepared 저장)", 
                             name0, mtype = meta.get("name","untitled"), meta.get("mimeType","")
                             drive_ro = drive_sa
                         except Exception as e2:
-                            status_area.error(f"접근 실패: {e2}")
-                            continue
+                            status_area.error(f"접근 실패: {e2}"); continue
                     else:
-                        status_area.error("접근 실패(공유 필요)")
-                        continue
+                        status_area.error("접근 실패(공유 필요)"); continue
 
                 GOOGLE_NATIVE = {
                     "application/vnd.google-apps.document": ("application/pdf",".pdf"),
@@ -389,8 +396,7 @@ with st.expander("📤 관리자: 자료 업로드 (원본→prepared 저장)", 
                         if drive_oauth:
                             res3 = drive_oauth.files().copy(fileId=file_id, body=body, fields="id,webViewLink").execute()
                         else:
-                            status_area.error("복사 실패(권한 부족)")
-                            continue
+                            status_area.error("복사 실패(권한 부족)"); continue
                     created.append({"id":res3["id"],"name":body["name"],"link":res3.get("webViewLink",""),
                                     "ext":"", "orig_base": name0})
 
@@ -404,7 +410,7 @@ with st.expander("📤 관리자: 자료 업로드 (원본→prepared 저장)", 
                     ai_title = _ai_title(item.get("orig_base", old), hint=title_hint)
                     new_name = _safe_name(f"{_ts()}__{ai_title}{ext}")
                     k=new_name; n=2
-                    while k in used: 
+                    while k in used:
                         k=f"{new_name} ({n})"; n+=1
                     try:
                         drive_sa.files().update(fileId=fid, body={"name":k}).execute()
@@ -447,10 +453,6 @@ with st.expander("📤 관리자: 자료 업로드 (원본→prepared 저장)", 
         except Exception as e:
             prog.progress(0, text="오류")
             status_area.error(f"처리 실패: {e}")
-
-
-# ============= 7) 인덱싱 보고서 ================================================
-
 
 # ============= 7) 인덱싱 보고서 ================================================
 rep = ss.get("indexing_report")
@@ -688,6 +690,7 @@ if user_input:
     _jsonl_log([chat_store.make_entry(ss.session_id, "user", "user", user_input, mode, model="user")])
 
     # Gemini 1차
+    from src.rag_engine import get_text_answer, llm_complete
     with st.spinner("🤖 Gemini 선생님이 먼저 답합니다…"):
         prev_ctx = _build_context(ss.messages[:-1], limit_pairs=2, max_chars=2000)
         gemini_query = (f"[이전 대화]\n{prev_ctx}\n\n" if prev_ctx else "") + f"[학생 질문]\n{user_input}"
@@ -700,7 +703,7 @@ if user_input:
     _jsonl_log([chat_store.make_entry(ss.session_id, "assistant", "Gemini", content_g, mode, model=getattr(settings,"LLM_MODEL","gemini"))])
 
     # ChatGPT 보완(있으면)
-    if ready_openai:
+    if "qe_openai" in ss:
         review_directive = (
             "역할: 동료 AI 영어교사\n"
             "목표: [이전 대화], [학생 질문], [동료의 1차 답변]을 읽고 사실오류/빠진점/모호함을 보완.\n"
@@ -709,7 +712,7 @@ if user_input:
         prev_all = _build_context(ss.messages, limit_pairs=2, max_chars=2000)
         augmented = ((f"[이전 대화]\n{prev_all}\n\n" if prev_all else "") +
                      f"[학생 질문]\n{user_input}\n\n"
-                     f"[동료의 1차 답변(Gemini)]\n{_strip_sources(ans_g)}\n\n"
+                     f"[동료의 1차 답변(Gemini)]\n{re.sub(r'\\n+---\\n\\*참고 자료:.*$', '', ans_g, flags=re.DOTALL)}\n\n"
                      "[당신의 작업]\n위 기준으로만 보완/검증.")
         with st.spinner("🤝 ChatGPT 선생님이 보완/검증 중…"):
             ans_o = llm_complete(ss.get("llm_openai"),
