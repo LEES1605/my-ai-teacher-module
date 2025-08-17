@@ -32,6 +32,30 @@ os.environ["STREAMLIT_SERVER_ENABLE_WEBSOCKET_COMPRESSION"] = "false"
 st.set_page_config(page_title="나의 AI 영어 교사", layout="wide", initial_sidebar_state="collapsed")
 finish_oauth_if_redirected()
 
+# app.py 맨 위, st.set_page_config() 바로 아래에 붙이세요.
+from src.config import settings
+import streamlit as st
+
+def _require(k): return bool(str(getattr(settings, k, "")).strip())
+
+missing = []
+for k in ["GDRIVE_FOLDER_ID", "GEMINI_API_KEY"]:
+    if not _require(k): missing.append(k)
+
+# 서비스계정 JSON 필수
+if not settings.GDRIVE_SERVICE_ACCOUNT_JSON:
+    missing.append("GOOGLE_SERVICE_ACCOUNT_JSON")
+
+# OAuth를 쓸 때만 검사 (사이드바에서 OAuth 저장 켤 계획이라면)
+want_oauth = True  # OAuth 저장/관리자 업로드를 쓸 거면 True
+if want_oauth:
+    for k in ["GOOGLE_OAUTH_CLIENT_ID", "GOOGLE_OAUTH_CLIENT_SECRET", "GOOGLE_OAUTH_REDIRECT_URI"]:
+        if not _require(k): missing.append(k)
+
+if missing:
+    st.error("Secrets 누락: " + ", ".join(missing))
+
+
 # ===== 세션 상태 =====
 ss = st.session_state
 ss.setdefault("session_id", uuid.uuid4().hex[:12])
