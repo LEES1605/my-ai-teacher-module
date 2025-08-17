@@ -1,59 +1,80 @@
-@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;700&display=swap');
+/* assets/style.css */
+/* ────────────────────────────────────────────────────────────────────────────
+   전역 스타일
+   - 브랜드 변수: :root --brand, --title-size, --logo-h 는 파이썬에서 주입
+   - Streamlit의 내부 클래스 대신 data-testid 기반 선택자 위주 사용
+   ─────────────────────────────────────────────────────────────────────────── */
 
-.stApp{
-  font-family:'Noto Sans KR', sans-serif;
-  background-size: cover; background-position: center;
-  background-repeat: no-repeat; background-attachment: fixed;
+:root{
+  --brand:#9067C6;
+  --title-size:3rem;
+  --logo-h:110px;
 }
 
-h1 { color: #F7FAFC !important; }
-
-.stButton>button{
-  border-radius: 50px; border: 2px solid #9067C6; background-color: #9067C6; color:#fff;
-  padding: 12px 28px; font-weight:700; transition: all .2s ease-in-out;
+/* 헤더 영역 */
+.brand-header{
+  display:flex;
+  align-items:center;
+  gap: 14px;
+  margin: 4px 0 8px 0;
+  padding: 6px 0 10px 0;
+  border-bottom: 1px solid rgba(0,0,0,0.08);
 }
-.stButton>button:hover{ background:transparent; color:#A685DB; border-color:#A685DB; }
+.brand-header.no-logo{ padding-top: 12px; }
 
-/* 진행바 */
-.gp-wrap{
-  width:100%; height:28px; border-radius:12px;
-  background: rgba(255,255,255,.12);
-  border:1px solid rgba(255,255,255,.25);
-  position:relative; overflow:hidden;
-  box-shadow: 0 4px 14px rgba(0,0,0,.15);
+.brand-logo img{
+  height: var(--logo-h);
+  width: auto;
+  display:block;
+  border-radius: 8px;
 }
-.gp-fill{ height:100%; background: linear-gradient(90deg,#7c5ad9,#9067C6); transition: width .25s ease; }
-.gp-label{
-  position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
-  font-weight:800; color:#F7FAFC; text-shadow: 0 1px 2px rgba(0,0,0,.4); font-size:20px; pointer-events:none;
+
+.brand-title-wrap{ display:flex; align-items:flex-end; }
+.brand-title{
+  margin:0;
+  font-size: var(--title-size);
+  line-height: 1.12;
+  letter-spacing: -0.02em;
+  color: var(--brand);
+  font-weight: 800;
 }
-.gp-msg{ margin-top:.5rem; color:#F7FAFC; opacity:.9; font-size:0.95rem; }
 
-/* 헤더 */
-.header-bar { width:100%; display:flex; align-items:center; gap:14px; margin:10px 0 6px; }
-.header-left{ display:flex; align-items:center; gap:14px; min-height:72px; }
-.brand-logo{ height:110px; width:auto; object-fit:contain; display:block; }
-.brand-title{ color:#9067C6; font-weight:900; letter-spacing:.3px; margin:0; line-height:1.1; }
-@media (max-width: 980px){ .brand-title{ font-size:2.2rem !important; } }
-@media (max-width: 720px){ .brand-title{ font-size:1.9rem !important; } }
+/* 반응형: 좁은 화면에서 타이틀 크기/정렬 조정 */
+@media (max-width: 980px){
+  .brand-title{ font-size: calc(var(--title-size) * 0.84); }
+}
+@media (max-width: 640px){
+  .brand-header{ flex-wrap: wrap; gap: 8px; }
+  .brand-logo img{ height: calc(var(--logo-h) * 0.82); }
+  .brand-title{ font-size: calc(var(--title-size) * 0.74); }
+}
 
-/* ===== 진행바 (gp-*) ===== */
-.gp-wrap{
-  width:100%; height:28px; border-radius:12px;
-  background: rgba(0,0,0,.06);
-  border:1px solid rgba(0,0,0,.12);
-  position:relative; overflow:hidden;
-  box-shadow: 0 4px 14px rgba(0,0,0,.08);
+/* 메인 컨테이너 여백 살짝 축소 */
+[data-testid="stAppViewContainer"] .main .block-container{
+  padding-top: 1.2rem;
+}
+
+/* Chat input 가독성 */
+[data-testid="stChatMessage"] p{ margin-bottom: .6rem; }
+
+/* 진행바(보조): ui.ensure_progress_css 가 핵심을 주입함. 여기서는 미묘한 그림자만 */
+.gp-bar{
+  box-shadow: inset 0 0 0 1px rgba(0,0,0,0.05);
+  background: rgba(0,0,0,0.06);
 }
 .gp-fill{
-  height:100%;
-  background: linear-gradient(90deg,#7c5ad9,#9067C6);
-  transition: width .25s ease;
+  background: var(--brand);
 }
-.gp-label{
-  position:absolute; inset:0;
-  display:flex; align-items:center; justify-content:center;
-  font-weight:800; color:#1A202C; text-shadow: 0 1px 2px rgba(255,255,255,.5);
-  font-size:20px; pointer-events:none;
+
+/* Streamlit 기본 헤더 배경 제거 */
+[data-testid="stHeader"]{
+  background: transparent;
 }
-.gp-msg{ margin-top:.5rem; color:#4A5568; opacity:.95; font-size:0.95rem; }
+
+/* 버튼 모서리/그림자 소폭 */
+button[kind="primary"], .stButton>button{
+  border-radius: 10px;
+  box-shadow: 0 1px 0 rgba(0,0,0,0.04);
+}
+
+/* END OF FILE */
