@@ -9,7 +9,7 @@ def _logout_button_area() -> None:
         if st.button("🔒 관리자 모드 끄기", key="admin_logout"):
             st.session_state.pop("admin_verified", None)
             st.session_state["admin_mode"] = False
-            st.experimental_rerun()
+            st.rerun()
 
 def admin_login_flow(admin_password: str) -> bool:
     """
@@ -38,7 +38,7 @@ def admin_login_flow(admin_password: str) -> bool:
             if compare_digest(str(pw), str(admin_password)):
                 st.session_state["admin_verified"] = True
                 st.success("인증 성공! 아래 관리자 패널을 사용할 수 있어요.")
-                st.experimental_rerun()
+                st.rerun()
             else:
                 st.error("비밀번호가 올바르지 않습니다.")
     return False
