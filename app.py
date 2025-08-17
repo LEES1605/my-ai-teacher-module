@@ -245,93 +245,95 @@ if is_admin:
             st.session_state["response_mode"] = str(mode_sel)
             st.success("RAG/LLM 설정이 저장되었습니다. (다음 쿼리부터 반영)")
 
-# ===== [10B] OPTIMIZATION PANEL (with presets) ===============================
-with st.expander("🧩 최적화 설정(전처리/청킹/중복제거)", expanded=True):
-    # 1) 프로필 정의
-    #    - cs: chunk size, co: chunk overlap, mc: min chars
-    #    - dd: dedup by hash, slt: skip low text, psu: pre-summarize
-    PROFILES = {
-        "⚡ 속도 우선": dict(cs=1600, co=40,  mc=80,  dd=True, slt=True, psu=False),
-        "🔁 균형":     dict(cs=1024, co=80,  mc=120, dd=True, slt=True, psu=False),
-        "🔎 품질 우선": dict(cs=800,  co=120, mc=200, dd=True, slt=True, psu=True),
-    }
+# ===== [10B] OPTIMIZATION PANEL (with presets) — ADMIN ONLY ==================
+if is_admin:
+    with st.expander("🧩 최적화 설정(전처리/청킹/중복제거)", expanded=True):
+        # 1) 프로필 정의
+        #    - cs: chunk size, co: chunk overlap, mc: min chars
+        #    - dd: dedup by hash, slt: skip low text, psu: pre-summarize
+        PROFILES = {
+            "⚡ 속도 우선": dict(cs=1600, co=40,  mc=80,  dd=True, slt=True, psu=False),
+            "🔁 균형":     dict(cs=1024, co=80,  mc=120, dd=True, slt=True, psu=False),
+            "🔎 품질 우선": dict(cs=800,  co=120, mc=200, dd=True, slt=True, psu=True),
+        }
 
-    # 상태 기본값 준비
-    st.session_state.setdefault("opt_chunk_size",     settings.CHUNK_SIZE)
-    st.session_state.setdefault("opt_chunk_overlap",  settings.CHUNK_OVERLAP)
-    st.session_state.setdefault("opt_min_chars",      settings.MIN_CHARS_PER_DOC)
-    st.session_state.setdefault("opt_dedup",          settings.DEDUP_BY_TEXT_HASH)
-    st.session_state.setdefault("opt_skip_low_text",  settings.SKIP_LOW_TEXT_DOCS)
-    st.session_state.setdefault("opt_pre_summarize",  settings.PRE_SUMMARIZE_DOCS)
+        # 상태 기본값 준비
+        st.session_state.setdefault("opt_chunk_size",     settings.CHUNK_SIZE)
+        st.session_state.setdefault("opt_chunk_overlap",  settings.CHUNK_OVERLAP)
+        st.session_state.setdefault("opt_min_chars",      settings.MIN_CHARS_PER_DOC)
+        st.session_state.setdefault("opt_dedup",          settings.DEDUP_BY_TEXT_HASH)
+        st.session_state.setdefault("opt_skip_low_text",  settings.SKIP_LOW_TEXT_DOCS)
+        st.session_state.setdefault("opt_pre_summarize",  settings.PRE_SUMMARIZE_DOCS)
 
-    # 2) 프로필 적용 함수
-    def _apply_profile(p: dict):
-        st.session_state["opt_chunk_size"]    = int(p["cs"])
-        st.session_state["opt_chunk_overlap"] = int(p["co"])
-        st.session_state["opt_min_chars"]     = int(p["mc"])
-        st.session_state["opt_dedup"]         = bool(p["dd"])
-        st.session_state["opt_skip_low_text"] = bool(p["slt"])
-        st.session_state["opt_pre_summarize"] = bool(p["psu"])
+        # 2) 프로필 적용 함수
+        def _apply_profile(p: dict):
+            st.session_state["opt_chunk_size"]    = int(p["cs"])
+            st.session_state["opt_chunk_overlap"] = int(p["co"])
+            st.session_state["opt_min_chars"]     = int(p["mc"])
+            st.session_state["opt_dedup"]         = bool(p["dd"])
+            st.session_state["opt_skip_low_text"] = bool(p["slt"])
+            st.session_state["opt_pre_summarize"] = bool(p["psu"])
 
-    # 3) 프로필 버튼 (원클릭 설정)
-    st.write("원클릭 프로필:")
-    c1, c2, c3 = st.columns(3)
-    if c1.button("⚡ 속도 우선"):
-        _apply_profile(PROFILES["⚡ 속도 우선"])
-        st.toast("⚡ 속도 우선 프로필을 적용했어요!", icon="⚡")
-        st.rerun()
-    if c2.button("🔁 균형"):
-        _apply_profile(PROFILES["🔁 균형"])
-        st.toast("🔁 균형 프로필을 적용했어요!", icon="🔁")
-        st.rerun()
-    if c3.button("🔎 품질 우선"):
-        _apply_profile(PROFILES["🔎 품질 우선"])
-        st.toast("🔎 품질 우선 프로필을 적용했어요!", icon="🔎")
-        st.rerun()
+        # 3) 프로필 버튼 (원클릭 설정)
+        st.write("원클릭 프로필:")
+        c1, c2, c3 = st.columns(3)
+        if c1.button("⚡ 속도 우선"):
+            _apply_profile(PROFILES["⚡ 속도 우선"])
+            st.toast("⚡ 속도 우선 프로필을 적용했어요!", icon="⚡")
+            st.rerun()
+        if c2.button("🔁 균형"):
+            _apply_profile(PROFILES["🔁 균형"])
+            st.toast("🔁 균형 프로필을 적용했어요!", icon="🔁")
+            st.rerun()
+        if c3.button("🔎 품질 우선"):
+            _apply_profile(PROFILES["🔎 품질 우선"])
+            st.toast("🔎 품질 우선 프로필을 적용했어요!", icon="🔎")
+            st.rerun()
 
-    # 현재 설정 요약 뱃지
-    st.caption(
-        f"현재 설정 요약 → chunk: **{st.session_state['opt_chunk_size']}** / "
-        f"overlap: **{st.session_state['opt_chunk_overlap']}** / "
-        f"min_chars: **{st.session_state['opt_min_chars']}** / "
-        f"dedup: **{st.session_state['opt_dedup']}** / "
-        f"skip_low_text: **{st.session_state['opt_skip_low_text']}** / "
-        f"pre_summarize: **{st.session_state['opt_pre_summarize']}**"
-    )
+        # 현재 설정 요약 뱃지
+        st.caption(
+            f"현재 설정 요약 → chunk: **{st.session_state['opt_chunk_size']}** / "
+            f"overlap: **{st.session_state['opt_chunk_overlap']}** / "
+            f"min_chars: **{st.session_state['opt_min_chars']}** / "
+            f"dedup: **{st.session_state['opt_dedup']}** / "
+            f"skip_low_text: **{st.session_state['opt_skip_low_text']}** / "
+            f"pre_summarize: **{st.session_state['opt_pre_summarize']}**"
+        )
 
-    st.divider()
+        st.divider()
 
-    # 4) 세부 수동 조정 (원하면 덮어쓰기 가능)
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        # 범위 정의
-        cs_min, cs_max = 200, 2000
-        co_min, co_max = 0, 400
-        mc_min, mc_max = 50, 3000  # 80도 허용되도록 50부터
+        # 4) 세부 수동 조정 (원하면 덮어쓰기 가능)
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            # 범위 정의
+            cs_min, cs_max = 200, 2000
+            co_min, co_max = 0, 400
+            mc_min, mc_max = 50, 3000  # 80도 허용되도록 50부터
 
-        # 현재값을 범위로 보정
-        cs_def = clamp(st.session_state["opt_chunk_size"], cs_min, cs_max)
-        co_def = clamp(st.session_state["opt_chunk_overlap"], co_min, co_max)
-        mc_def = clamp(st.session_state["opt_min_chars"], mc_min, mc_max)
+            # 현재값을 범위로 보정
+            cs_def = clamp(st.session_state["opt_chunk_size"], cs_min, cs_max)
+            co_def = clamp(st.session_state["opt_chunk_overlap"], co_min, co_max)
+            mc_def = clamp(st.session_state["opt_min_chars"], mc_min, mc_max)
 
-        cs = st.number_input("청크 크기(문자)", min_value=cs_min, max_value=cs_max, value=int(cs_def), step=50)
-        co = st.number_input("청크 오버랩(문자)", min_value=co_min, max_value=co_max, value=int(co_def), step=10)
-        mc = st.number_input("문서 최소 길이(문자)", min_value=mc_min, max_value=mc_max, value=int(mc_def), step=50)
+            cs = st.number_input("청크 크기(문자)", min_value=cs_min, max_value=cs_max, value=int(cs_def), step=50)
+            co = st.number_input("청크 오버랩(문자)", min_value=co_min, max_value=co_max, value=int(co_def), step=10)
+            mc = st.number_input("문서 최소 길이(문자)", min_value=mc_min, max_value=mc_max, value=int(mc_def), step=50)
 
-    with c2:
-        dd = st.toggle("텍스트 해시로 중복 제거", value=bool(st.session_state["opt_dedup"]))
-    with c3:
-        slt = st.toggle("저품질(짧은/빈약) 문서 스킵", value=bool(st.session_state["opt_skip_low_text"]))
-        psu = st.toggle("문서 요약 메타데이터 생성(느려짐)", value=bool(st.session_state["opt_pre_summarize"]))
+        with c2:
+            dd = st.toggle("텍스트 해시로 중복 제거", value=bool(st.session_state["opt_dedup"]))
+        with c3:
+            slt = st.toggle("저품질(짧은/빈약) 문서 스킵", value=bool(st.session_state["opt_skip_low_text"]))
+            psu = st.toggle("문서 요약 메타데이터 생성(느려짐)", value=bool(st.session_state["opt_pre_summarize"]))
 
-    if st.button("최적화 설정 적용"):
-        st.session_state["opt_chunk_size"]    = int(cs)
-        st.session_state["opt_chunk_overlap"] = int(co)
-        st.session_state["opt_min_chars"]     = int(mc)
-        st.session_state["opt_dedup"]         = bool(dd)
-        st.session_state["opt_skip_low_text"] = bool(slt)
-        st.session_state["opt_pre_summarize"] = bool(psu)
-        st.success("최적화 설정이 저장되었습니다. 다음 인덱싱부터 적용됩니다.")
+        if st.button("최적화 설정 적용"):
+            st.session_state["opt_chunk_size"]    = int(cs)
+            st.session_state["opt_chunk_overlap"] = int(co)
+            st.session_state["opt_min_chars"]     = int(mc)
+            st.session_state["opt_dedup"]         = bool(dd)
+            st.session_state["opt_skip_low_text"] = bool(slt)
+            st.session_state["opt_pre_summarize"] = bool(psu)
+            st.success("최적화 설정이 저장되었습니다. 다음 인덱싱부터 적용됩니다.")
+
 
 
     with st.expander("🛠️ 관리자 도구", expanded=False):
