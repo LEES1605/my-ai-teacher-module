@@ -13,7 +13,7 @@ class Settings(BaseSettings):
 
     # === 필수 ===
     GEMINI_API_KEY: SecretStr
-    GDRIVE_FOLDER_ID: str
+    GDRIVE_FOLDER_ID: str  # 학습 자료 폴더(=prepared)
 
     # === 선택 ===
     ADMIN_PASSWORD: str | None = None
@@ -32,6 +32,11 @@ class Settings(BaseSettings):
     TITLE_SIZE_REM: float = 3.0
     LOGO_HEIGHT_PX: int = 110
 
+    # === 백업/복원 옵션 ===
+    AUTO_BACKUP_TO_DRIVE: bool = True            # 인덱싱 완료 직후 ZIP 자동 업로드
+    BACKUP_FOLDER_ID: str | None = None          # 지정 없으면 GDRIVE_FOLDER_ID 사용
+    BACKUP_KEEP_N: int = 5                       # 보관 개수(최신 N개만 유지)
+
 def _coerce_sa_dict(val: Any | None) -> dict[str, Any] | None:
     """서비스계정 JSON을 dict로 보정: 문자열 파싱/중첩 키/개행 복원."""
     if val is None:
@@ -48,7 +53,7 @@ def _coerce_sa_dict(val: Any | None) -> dict[str, Any] | None:
     else:
         return None
 
-    # 일부 환경은 {"service_account":{...}} 로 들어오기도 함
+    # {"service_account": {...}} 형태도 허용
     for k in ("service_account", "serviceAccount"):
         if isinstance(d.get(k), Mapping):
             d = dict(d[k])  # type: ignore[index]
@@ -68,6 +73,7 @@ def _build_settings_from_streamlit() -> Settings:
         "GEMINI_API_KEY", "GDRIVE_FOLDER_ID", "ADMIN_PASSWORD", "USE_BG_IMAGE",
         "LLM_MODEL", "EMBED_MODEL", "SIMILARITY_TOP_K", "RESPONSE_MODE",
         "BRAND_COLOR", "TITLE_TEXT", "TITLE_SIZE_REM", "LOGO_HEIGHT_PX",
+        "AUTO_BACKUP_TO_DRIVE", "BACKUP_FOLDER_ID", "BACKUP_KEEP_N",
     ):
         if k in st.secrets:
             data[k] = st.secrets[k]
