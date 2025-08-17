@@ -99,40 +99,36 @@ with st.sidebar:
         if st.button("로그아웃"):
             sign_out(); st.rerun()
 
-# ===== Google Drive 연결 테스트 (✅ try/except 중복 제거 버전) =====
+# ===== Google Drive 연결 테스트 =====
 st.markdown("## 🔗 Google Drive 연결 테스트")
-st.caption("서비스계정 저장은 공유드라이브 Writer 권한이 필요합니다. 인덱싱은 Readonly 권한이면 충분합니다.")
+st.caption("서비스계정 저장은 공유드라이브 Writer 권한이 필요. 인덱싱은 Readonly면 충분합니다.")
 
 from src.config import settings
 from src.rag_engine import smoke_test_drive, preview_drive_files, drive_diagnostics
 
-# 1) 서비스계정 JSON 진단 (예외 없어야 함)
-raw_sa = settings.GDRIVE_SERVICE_ACCOUNT_JSON
+# 서비스계정/폴더 진단
 try:
-    ok_sa, diag = drive_diagnostics(raw_sa)
+    ok_sa, head_sa, details_sa = drive_diagnostics(settings.GDRIVE_FOLDER_ID)  # ← 반환 3개!
+    if ok_sa:
+        st.success(head_sa)
+    else:
+        st.warning(head_sa)
+    with st.expander("서비스계정 JSON 진단 상세", expanded=not ok_sa):
+        st.code("\n".join(details_sa), language="text")
 except Exception as e:
-    ok_sa, diag = False, f"진단 함수 예외: {e}\n타입={type(raw_sa).__name__}\n프리뷰={str(raw_sa)[:400]}"
+    st.warning("진단 함수 예외:")
+    st.code(f"{type(e).__name__}: {e}\n타입={type(settings.GDRIVE_SERVICE_ACCOUNT_JSON).__name__}\n"
+            f"프리뷰={str(settings.GDRIVE_SERVICE_ACCOUNT_JSON)[:200]}...", language="text")
 
-if ok_sa:
-    st.success("🔎 Service Account JSON OK")
-else:
-    st.warning("🔎 Service Account JSON 문제 감지 — 아래 내용을 확인하세요.")
-with st.expander("서비스계정 JSON 진단 상세", expanded=not ok_sa):
-    st.code(diag)
-
-# 문제가 있으면 이후 단계는 중단
-if not ok_sa:
-    st.stop()
-
-# 2) 폴더 미리보기 & 연결 상태
-c1, c2 = st.columns([0.65, 0.35])
-with c1:
+col1, col2 = st.columns([0.65, 0.35])
+with col1:
     if st.button("폴더 파일 미리보기 (최신 10개)", use_container_width=True):
         ok, msg, rows = preview_drive_files(max_items=10)
         if ok and rows:
+            import pandas as pd
             df = pd.DataFrame(rows)
             df["type"] = df["mime"].str.replace("application/vnd.google-apps.", "", regex=False)
-            df = df.rename(columns={"modified": "modified_at"})[["name", "link", "type", "modified_at"]]
+            df = df.rename(columns={"modified": "modified_at"})[["name","link","type","modified_at"]]
             st.dataframe(
                 df, use_container_width=True, height=360,
                 column_config={
@@ -140,14 +136,14 @@ with c1:
                     "link": st.column_config.LinkColumn("open", display_text="열기"),
                     "type": st.column_config.TextColumn("유형"),
                     "modified_at": st.column_config.TextColumn("수정시각"),
-                },
-                hide_index=True,
+                }, hide_index=True
             )
         elif ok:
-            st.warning("폴더에 파일이 없거나 접근 권한이 부족합니다.")
+            st.warning("폴더에 파일이 없거나 접근할 수 없습니다.")
         else:
             st.error(msg)
-with c2:
+
+with col2:
     ok, msg = smoke_test_drive()
     st.success(msg) if ok else st.warning(msg)
 
