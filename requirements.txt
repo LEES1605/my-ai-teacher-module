@@ -1,25 +1,20 @@
-# --- Streamlit runtime ---
 streamlit>=1.48
 pandas
 
-# --- Google Drive API ---
-google-api-python-client>=2.137.0
-google-auth>=2.30.0
-google-auth-httplib2>=0.2.0
+google-api-python-client
+google-auth
+google-auth-httplib2
+google-auth-oauthlib
+requests
 
-# --- Google GenAI (새 SDK) ---
-google-genai>=1.0.0,<2
-
-# --- LlamaIndex core & Google GenAI adapters ---
 llama-index-core==0.12.52
 llama-index-llms-google-genai==0.2.4
 llama-index-embeddings-google-genai==0.2.1
 llama-index-readers-google==0.6.2
-
-# --- OpenAI adapters (ChatGPT 보완/검증 용) ---
-openai>=1.43.0
 llama-index-llms-openai>=0.4.0
 llama-index-embeddings-openai>=0.3.0
-
-# --- 호환/런타임 ---
+openai>=1.43.0
+google-genai
 protobuf<5
+
+pypdf
