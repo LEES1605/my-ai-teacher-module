@@ -7,6 +7,7 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 os.environ["STREAMLIT_SERVER_ENABLE_WEBSOCKET_COMPRESSION"] = "false"
 
 import time
+import math
 import streamlit as st
 
 from src.config import settings, APP_DATA_DIR, PERSIST_DIR, MANIFEST_PATH
@@ -40,6 +41,9 @@ is_admin = admin_login_flow(settings.ADMIN_PASSWORD or "")
 
 # ── 저장본 자동 연결/복원(무소음) ─────────────────────────────────────────────
 def _auto_attach_or_restore_silently() -> bool:
+    """
+    저장본 연결을 조용히 시도하되, 실패 사유는 관리자만 볼 수 있도록 session_state에 남긴다.
+    """
     try:
         if os.path.exists(PERSIST_DIR):
             init_llama_settings(
@@ -53,6 +57,7 @@ def _auto_attach_or_restore_silently() -> bool:
                 response_mode=st.session_state.get("response_mode", settings.RESPONSE_MODE),
                 similarity_top_k=int(st.session_state.get("similarity_top_k", settings.SIMILARITY_TOP_K)),
             )
+            st.session_state["_auto_attach_note"] = "local_ok"
             return True
         creds = _validate_sa(_normalize_sa(settings.GDRIVE_SERVICE_ACCOUNT_JSON))
         ok = try_restore_index_from_drive(creds, PERSIST_DIR, settings.BACKUP_FOLDER_ID or settings.GDRIVE_FOLDER_ID)
@@ -62,13 +67,72 @@ def _auto_attach_or_restore_silently() -> bool:
                 response_mode=st.session_state.get("response_mode", settings.RESPONSE_MODE),
                 similarity_top_k=int(st.session_state.get("similarity_top_k", settings.SIMILARITY_TOP_K)),
             )
+            st.session_state["_auto_attach_note"] = "restored_from_drive"
             return True
-    except Exception:
-        pass
+        st.session_state["_auto_attach_note"] = "no_cache_no_backup"
+    except Exception as e:
+        st.session_state["_attach_error"] = repr(e)
     return False
 
 if "query_engine" not in st.session_state:
     _auto_attach_or_restore_silently()
+
+# ── (신규) 인덱스 상태 진단 함수 ─────────────────────────────────────────────
+def _fmt_size(n: int) -> str:
+    units = ["B","KB","MB","GB","TB"]
+    i = 0
+    while n >= 1024 and i < len(units)-1:
+        n //= 1024
+        i += 1
+    return f"{n} {units[i]}"
+
+def render_index_diagnostics():
+    st.subheader("🧪 인덱스 상태 진단", divider="gray")
+    st.caption("관리자에게만 보이는 진단 패널입니다.")
+
+    # 1) 로컬 저장본 상태
+    exists = os.path.isdir(PERSIST_DIR)
+    st.write(f"• 로컬 저장 경로: `{PERSIST_DIR}` → {'존재' if exists else '없음'}")
+    total_files, total_bytes, latest_mtime = 0, 0, 0.0
+    if exists:
+        for root, _, files in os.walk(PERSIST_DIR):
+            for name in files:
+                full = os.path.join(root, name)
+                try:
+                    total_files += 1
+                    total_bytes += os.path.getsize(full)
+                    latest_mtime = max(latest_mtime, os.path.getmtime(full))
+                except Exception:
+                    pass
+        if total_files > 0:
+            st.write(f"• 파일 수: {total_files:,}개, 용량: ~{_fmt_size(total_bytes)}")
+            from datetime import datetime
+            st.write(f"• 최근 수정: {datetime.fromtimestamp(latest_mtime)}")
+        else:
+            st.write("• 파일이 없어요(폴더만 있음).")
+
+        # 2) 실제 로딩 테스트
+        try:
+            idx = _load_index_from_disk(PERSIST_DIR)
+            st.success("✅ 인덱스 로딩 성공 (query_engine 생성 가능)")
+        except Exception as e:
+            st.error("❌ 인덱스 로딩 실패 — 저장본이 손상되었거나 버전 불일치일 수 있어요.")
+            with st.expander("오류 세부"):
+                st.exception(e)
+
+    # 3) 자동 연결 시도 결과 요약
+    note = st.session_state.get("_auto_attach_note")
+    attach_err = st.session_state.get("_attach_error")
+    if note == "local_ok":
+        st.info("ℹ️ 이번 세션은 로컬 저장본에서 바로 연결되었습니다.")
+    elif note == "restored_from_drive":
+        st.info("ℹ️ 이번 세션은 드라이브 백업에서 자동 복원되었습니다.")
+    elif note == "no_cache_no_backup":
+        st.warning("⚠️ 로컬 저장본도 없고 드라이브 백업도 발견하지 못했습니다.")
+    if attach_err:
+        st.warning("🟠 자동 연결 중 예외가 있었습니다. 아래 오류를 참고하세요.")
+        with st.expander("자동 연결 예외 보기"):
+            st.code(attach_err)
 
 # ── 관리자 전용 패널 ──────────────────────────────────────────────────────────
 if is_admin:
@@ -108,10 +172,8 @@ if is_admin:
                     creds = _validate_sa(_normalize_sa(settings.GDRIVE_SERVICE_ACCOUNT_JSON))
                     dest = settings.BACKUP_FOLDER_ID or settings.GDRIVE_FOLDER_ID
                     with st.spinner("두뇌를 ZIP(날짜 포함)으로 묶고 드라이브에 업로드 중..."):
-                        file_id, file_name = export_brain_to_drive(creds, PERSIST_DIR, dest, filename=None)  # ← 자동 날짜
+                        _, file_name = export_brain_to_drive(creds, PERSIST_DIR, dest, filename=None)
                     st.success(f"업로드 완료! 파일명: {file_name}")
-
-                    # 보관 개수 정책 적용(오래된 백업 정리)
                     deleted = prune_old_backups(creds, dest, keep=int(settings.BACKUP_KEEP_N), prefix=INDEX_BACKUP_PREFIX)
                     if deleted:
                         st.info(f"오래된 백업 {len(deleted)}개 정리 완료.")
@@ -134,6 +196,10 @@ if is_admin:
                     st.error("가져오기 실패. 폴더 권한(편집자)과 파일 존재 여부를 확인하세요.")
                     with st.expander("자세한 오류 보기"):
                         st.exception(e)
+
+    # (신규) 진단 패널
+    with st.expander("🔎 인덱스 상태 진단", expanded=False):
+        render_index_diagnostics()
 
 # ── 메인 워크플로우 ───────────────────────────────────────────────────────────
 def main():
@@ -213,9 +279,8 @@ def main():
                     creds = _validate_sa(_normalize_sa(settings.GDRIVE_SERVICE_ACCOUNT_JSON))
                     dest = settings.BACKUP_FOLDER_ID or settings.GDRIVE_FOLDER_ID
                     with st.spinner("⬆️ 인덱스 저장본을 드라이브로 자동 백업 중..."):
-                        _, file_name = export_brain_to_drive(creds, PERSIST_DIR, dest, filename=None)  # ← 날짜 포함
+                        _, file_name = export_brain_to_drive(creds, PERSIST_DIR, dest, filename=None)  # 날짜 포함
                     st.success(f"자동 백업 완료! 파일명: {file_name}")
-
                     deleted = prune_old_backups(creds, dest, keep=int(settings.BACKUP_KEEP_N), prefix=INDEX_BACKUP_PREFIX)
                     if deleted:
                         st.info(f"오래된 백업 {len(deleted)}개 정리 완료.")
