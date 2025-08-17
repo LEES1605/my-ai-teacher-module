@@ -329,10 +329,37 @@ def generate_booklets_drive(topics: list[str], booklet_title: str, make_citation
 # ================= 9) prepared 감시/매니페스트 ==========
 from googleapiclient.discovery import build as _build_gd
 from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
-from src.rag_engine import _normalize_sa
+from google.oauth2.service_account import Credentials as _SACreds
+import json as _json
+
+# (중요) 서비스계정 JSON을 어떤 형태로 받아도 google-auth Credentials로 변환
+def _normalize_sa_any(raw):
+    """
+    raw: dict 또는 JSON 문자열
+    return: google.oauth2.service_account.Credentials (with Drive scopes)
+    """
+    if isinstance(raw, dict):
+        info = raw
+    elif isinstance(raw, str):
+        try:
+            info = _json.loads(raw)
+        except Exception as e:
+            raise ValueError("GDRIVE_SERVICE_ACCOUNT_JSON은 dict 또는 JSON 문자열이어야 합니다.") from e
+    else:
+        raise ValueError(f"GDRIVE_SERVICE_ACCOUNT_JSON 타입이 잘못되었습니다: {type(raw).__name__}")
+
+    scopes = [
+        "https://www.googleapis.com/auth/drive",
+        "https://www.googleapis.com/auth/drive.readonly",
+    ]
+    return _SACreds.from_service_account_info(info, scopes=scopes)
+
 def _build_sa_drive():
-    creds = _normalize_sa(settings.GDRIVE_SERVICE_ACCOUNT_JSON)
-    return _build_gd("drive","v3",credentials=creds)
+    # src.config.settings 안의 GDRIVE_SERVICE_ACCOUNT_JSON만 사용 (st.secrets에 직접 의존 금지)
+    from src.config import settings
+    creds = _normalize_sa_any(getattr(settings, "GDRIVE_SERVICE_ACCOUNT_JSON", {}))
+    return _build_gd("drive", "v3", credentials=creds)
+
 def _find_file(drive, parent_id: str, name: str):
     q = f"'{parent_id}' in parents and name = '{name}' and trashed = false"
     res = drive.files().list(q=q, fields="files(id,name,mimeType)", pageSize=1,
