@@ -37,6 +37,14 @@ class Settings(BaseSettings):
     BACKUP_FOLDER_ID: str | None = None          # 지정 없으면 GDRIVE_FOLDER_ID 사용
     BACKUP_KEEP_N: int = 5                       # 보관 개수(최신 N개만 유지)
 
+    # === 최적화(품질) 옵션 ===
+    CHUNK_SIZE: int = 900                         # 문장기반 청킹 크기(문자)
+    CHUNK_OVERLAP: int = 120                      # 청크 오버랩(문자)
+    MIN_CHARS_PER_DOC: int = 500                  # 이보다 짧으면 저품질로 판단(스캔/이미지 가능성)
+    DEDUP_BY_TEXT_HASH: bool = True               # 텍스트 완전중복 제거
+    SKIP_LOW_TEXT_DOCS: bool = True               # 저품질(짧은/텍스트 빈약) 문서 건너뛰기
+    PRE_SUMMARIZE_DOCS: bool = False              # 문서별 요약 메타데이터 생성(토큰/시간 증가)
+
 def _coerce_sa_dict(val: Any | None) -> dict[str, Any] | None:
     """서비스계정 JSON을 dict로 보정: 문자열 파싱/중첩 키/개행 복원."""
     if val is None:
@@ -74,6 +82,8 @@ def _build_settings_from_streamlit() -> Settings:
         "LLM_MODEL", "EMBED_MODEL", "SIMILARITY_TOP_K", "RESPONSE_MODE",
         "BRAND_COLOR", "TITLE_TEXT", "TITLE_SIZE_REM", "LOGO_HEIGHT_PX",
         "AUTO_BACKUP_TO_DRIVE", "BACKUP_FOLDER_ID", "BACKUP_KEEP_N",
+        "CHUNK_SIZE", "CHUNK_OVERLAP", "MIN_CHARS_PER_DOC",
+        "DEDUP_BY_TEXT_HASH", "SKIP_LOW_TEXT_DOCS", "PRE_SUMMARIZE_DOCS",
     ):
         if k in st.secrets:
             data[k] = st.secrets[k]
@@ -102,3 +112,4 @@ APP_DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 PERSIST_DIR: str = str(APP_DATA_DIR / "storage_gdrive")
 MANIFEST_PATH: str = str(APP_DATA_DIR / "drive_manifest.json")
+QUALITY_REPORT_PATH: str = str(APP_DATA_DIR / "quality_report.json")
