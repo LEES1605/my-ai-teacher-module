@@ -12,7 +12,6 @@ from typing import Optional
 import streamlit as st
 from src.config import settings
 
-# ── 내부 헬퍼 ────────────────────────────────────────────────────────────────
 def _read_bytes(path: str) -> Optional[bytes]:
     try:
         with open(path, "rb") as f:
@@ -25,23 +24,15 @@ def _img_to_data_uri(path: str) -> Optional[str]:
     if not b:
         return None
     enc = base64.b64encode(b).decode("ascii")
-    # 확장자에 따라 MIME 추정
     ext = os.path.splitext(path)[1].lower()
     mime = "image/png" if ext in (".png",) else "image/jpeg"
     return f"data:{mime};base64,{enc}"
 
-# ── 공개 API ────────────────────────────────────────────────────────────────
 def load_css(css_path: str, use_bg: bool = False, bg_path: Optional[str] = None) -> None:
-    """
-    - assets/style.css를 로드하고 :root CSS 변수(브랜드 색/사이즈)를 주입
-    - use_bg=True이고 배경 이미지가 있으면 앱 배경에 적용
-    """
-    # 기본 CSS 파일
     css_bytes = _read_bytes(css_path)
     if css_bytes:
         st.markdown(f"<style>{css_bytes.decode('utf-8')}</style>", unsafe_allow_html=True)
     else:
-        # 최소 폴백
         st.markdown(
             """
             <style>
@@ -51,7 +42,6 @@ def load_css(css_path: str, use_bg: bool = False, bg_path: Optional[str] = None)
             unsafe_allow_html=True,
         )
 
-    # 브랜드 변수 주입(런타임 값 반영)
     st.markdown(
         f"""
         <style>
@@ -65,7 +55,6 @@ def load_css(css_path: str, use_bg: bool = False, bg_path: Optional[str] = None)
         unsafe_allow_html=True,
     )
 
-    # (선택) 배경 이미지
     if use_bg and bg_path:
         uri = _img_to_data_uri(bg_path)
         if uri:
@@ -84,10 +73,6 @@ def load_css(css_path: str, use_bg: bool = False, bg_path: Optional[str] = None)
             )
 
 def safe_render_header(logo_path: str = "assets/logo.png") -> None:
-    """
-    상단 헤더: 로고(있으면) + 타이틀
-    - 화면 폭이 줄면 로고가 왼쪽, 타이틀이 오른쪽/아래로 반응형 정렬
-    """
     logo_uri = _img_to_data_uri(logo_path)
     if logo_uri:
         html = f"""
@@ -111,7 +96,6 @@ def safe_render_header(logo_path: str = "assets/logo.png") -> None:
     st.markdown(html, unsafe_allow_html=True)
 
 def ensure_progress_css() -> None:
-    """진행바 전용 CSS를 주입(한 번만)."""
     if st.session_state.get("_gp_css_injected"):
         return
     st.markdown(
@@ -143,10 +127,6 @@ def ensure_progress_css() -> None:
     st.session_state["_gp_css_injected"] = True
 
 def render_progress_bar(slot, percent: int) -> None:
-    """
-    slot: st.empty() 등 컨테이너
-    percent: 0~100
-    """
     p = max(0, min(100, int(percent)))
     slot.markdown(
         f"""
