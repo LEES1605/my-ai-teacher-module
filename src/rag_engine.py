@@ -1,23 +1,23 @@
-# src/rag_engine.py — 증분 인덱싱(스텝/재개/취소) + prepared 전용 + chat_log 제외
+# src/rag_engine.py — 증분 인덱싱(스텝/재개/취소) + prepared 전용 + chat_log 제외 + Drive 진단
 from __future__ import annotations
 import os, json, time
-from typing import Callable, Any, Mapping, Iterable, List, Tuple
+from typing import Callable, Any, Mapping, Iterable, Tuple, List, Dict
 
 import streamlit as st
 from googleapiclient.errors import HttpError
 from src.config import settings
 
+# ================================ 예외 ================================
+class CancelledError(Exception):
+    pass
 
-# ─────────────────────────────────────────────────────────────
-# 드라이브/서비스계정 진단 (예외 발생 금지)
-# ─────────────────────────────────────────────────────────────
-
+# ============================ SA 파싱/검증 ============================
 def _parse_service_account(raw: Any) -> Tuple[Mapping[str, Any] | None, str | None]:
     """
     secrets 의 GOOGLE_SERVICE_ACCOUNT_JSON 을 dict 로 정규화.
     - dict: 그대로 반환
     - str : JSON 파싱 시도
-    - 그 외: 에러 메시지 반환
+    - 그 외: 에러
     """
     if isinstance(raw, Mapping):
         return raw, None
@@ -38,13 +38,13 @@ def _redact(s: str, keep: int = 6) -> str:
 
 def _validate_sa_dict(d: Mapping[str, Any]) -> Tuple[bool, List[str], List[str]]:
     """
-    서비스계정 dict 필수 필드/형식 점검.
+    SA dict 필수 필드/형식 점검.
     returns: (ok, errors, notes)
     """
     required = ["type", "project_id", "private_key_id", "private_key", "client_email", "client_id", "token_uri"]
     errors, notes = [], []
 
-    missing = [k for k in required if not str(d.get(k, "")).strip()]
+    missing = [k for k in required if not d.get(k)]
     if missing:
         errors.append(f"Missing keys: {', '.join(missing)}")
 
@@ -73,6 +73,7 @@ def _validate_sa_dict(d: Mapping[str, Any]) -> Tuple[bool, List[str], List[str]]
     notes.append(f"client_id:  {_redact(str(d.get('client_id','')))}")
     return (len(errors) == 0), errors, notes
 
+# ============================ Drive 진단 =============================
 def _normalize_sa(raw: Any) -> Mapping[str, Any]:
     if isinstance(raw, str):
         try:
@@ -102,7 +103,7 @@ def drive_diagnostics(folder_id: str | None = None) -> Tuple[bool, str, List[str
     sa, parse_err = _parse_service_account(sa_raw)
     if parse_err:
         details.append(f"Service account parse error: {parse_err}")
-        details.append("→ Secrets에서 GOOGLE_SERVICE_ACCOUNT_JSON을 'TOML 테이블' 또는 'JSON 문자열'로 저장하세요.")
+        details.append("→ Secrets에서 GOOGLE_SERVICE_ACCOUNT_JSON을 TOML 테이블(여러 키) 또는 JSON 문자열로 저장하세요.")
         return False, "Service account parse failed.", details
 
     # 2) 필드 검증
@@ -117,7 +118,9 @@ def drive_diagnostics(folder_id: str | None = None) -> Tuple[bool, str, List[str
         svc = _build_drive_service(sa)
         if folder_id:
             meta = svc.files().get(
-                fileId=folder_id, fields="id,name,driveId,ownedByMe,parents", supportsAllDrives=True
+                fileId=folder_id,
+                fields="id,name,driveId,ownedByMe,parents",
+                supportsAllDrives=True,
             ).execute()
             name = meta.get("name", "(unknown)")
             details.append(f"folder reachable: name={name}, id={folder_id}, driveId={meta.get('driveId') or 'MyDrive'}")
@@ -127,8 +130,10 @@ def drive_diagnostics(folder_id: str | None = None) -> Tuple[bool, str, List[str
 
     except HttpError as he:
         status = getattr(getattr(he, "resp", None), "status", "?")
+        text = ""
         try:
-            text = he.content.decode(errors="ignore")[:400] if getattr(he, "content", None) else str(he)[:400]
+            if he.content:
+                text = he.content.decode(errors="ignore")[:400]
         except Exception:
             text = str(he)[:400]
         details.append(f"HTTP {status}: {text}")
@@ -146,55 +151,14 @@ def smoke_test_drive() -> tuple[bool, str]:
     ok, head, _ = drive_diagnostics(settings.GDRIVE_FOLDER_ID)
     return ok, head
 
-
-# ─────────────────────────────────────────────────────────────
-# 예외/LLM/임베딩
-# ─────────────────────────────────────────────────────────────
-
-class CancelledError(Exception):
-    pass
-
-def set_embed_provider(provider: str, api_key: str, model: str) -> None:
-    from llama_index.core import Settings
-    if provider == "google":
-        from llama_index.embeddings.google_genai import GoogleGenAIEmbedding
-        Settings.embed_model = GoogleGenAIEmbedding(model=model, api_key=api_key)
-    elif provider == "openai":
-        from llama_index.embeddings.openai import OpenAIEmbedding
-        Settings.embed_model = OpenAIEmbedding(model=model, api_key=api_key)
-    else:
-        raise ValueError(f"Unknown embed provider: {provider}")
-
-def make_llm(provider: str, api_key: str, model: str, temperature: float = 0.0):
-    if provider == "google":
-        from llama_index.llms.google_genai import GoogleGenAI
-        return GoogleGenAI(api_key=api_key, model=model, temperature=temperature)
-    elif provider == "openai":
-        from llama_index.llms.openai import OpenAI
-        return OpenAI(api_key=api_key, model=model, temperature=temperature)
-    else:
-        raise ValueError(f"Unknown llm provider: {provider}")
-
-def llm_complete(llm, prompt: str, temperature: float = 0.0) -> str:
-    try:
-        resp = llm.complete(prompt)
-        return getattr(resp, "text", str(resp))
-    except AttributeError:
-        return llm.predict(prompt)
-
-
-# ─────────────────────────────────────────────────────────────
-# Drive 목록/리더
-# ─────────────────────────────────────────────────────────────
-
 def _fetch_drive_manifest(
-    creds_dict: Mapping[str, Any],
+    creds_dict,
     root_folder_id: str,
     exclude_folder_names: Iterable[str] | None = None,
 ) -> dict:
     """공유드라이브 포함 재귀 스냅샷. exclude_folder_names는 재귀 진입 제외(예: chat_log)."""
     svc = _build_drive_service(creds_dict)
-    exclude_l = {x.strip().lower() for x in (exclude_folder_names or [])}
+    exclude_l = set([x.strip().lower() for x in (exclude_folder_names or [])])
 
     def list_children(folder_id: str):
         files, folders, page_token = [], [], None
@@ -240,11 +204,7 @@ def _fetch_drive_manifest(
         f.setdefault("md5Checksum", "")
     return {"root": root_folder_id, "files": all_files, "count": len(all_files)}
 
-
-# ─────────────────────────────────────────────────────────────
-# 인덱스 I/O 및 보조
-# ─────────────────────────────────────────────────────────────
-
+# ============================ 인덱스 I/O =============================
 def _load_index_from_disk(persist_dir: str):
     from llama_index.core import StorageContext, load_index_from_storage
     return load_index_from_storage(StorageContext.from_defaults(persist_dir=persist_dir))
@@ -289,8 +249,8 @@ def _save_signature(persist_dir: str, sig: dict) -> None:
     with open(_sig_path(persist_dir), "w", encoding="utf-8") as f:
         json.dump(sig, f, ensure_ascii=False, indent=2)
 
+# 문서 정규화 & 삽입 (버전차 호환)
 def _ensure_documents(docs) -> list:
-    """GoogleDriveReader가 반환한 객체가 list[str]/dict일 때도 안전하게 Document로 정규화."""
     from llama_index.core import Document
     if not docs:
         return []
@@ -305,28 +265,18 @@ def _ensure_documents(docs) -> list:
     return norm
 
 def _insert_docs(index, docs):
-    """LlamaIndex 버전차 호환 (insert / insert_nodes / insert_documents)"""
     docs = _ensure_documents(docs)
     if not docs:
         return
-    try:
-        index.insert(docs); return
-    except Exception:
-        pass
-    try:
-        index.insert_nodes(docs); return
-    except Exception:
-        pass
-    try:
-        index.insert_documents(docs); return
-    except Exception as e:
-        raise e
+    for m in ("insert", "insert_nodes", "insert_documents"):
+        try:
+            getattr(index, m)(docs)
+            return
+        except Exception:
+            pass
+    raise RuntimeError("index insert failed for all methods")
 
-
-# ─────────────────────────────────────────────────────────────
-# 매니페스트 비교
-# ─────────────────────────────────────────────────────────────
-
+# ============================ 매니페스트 비교 ============================
 def _manifests_differ(local: dict, remote: dict) -> bool:
     def sig(d: dict) -> tuple:
         return (d.get("id",""), d.get("modifiedTime",""), d.get("size",""), d.get("md5Checksum",""))
@@ -346,11 +296,7 @@ def _save_local_manifest(path: str, manifest: dict) -> None:
     with open(path, "w", encoding="utf-8") as f:
         json.dump(manifest, f, ensure_ascii=False, indent=2)
 
-
-# ─────────────────────────────────────────────────────────────
-# 스텝 인덱서 (시작/재개/취소)
-# ─────────────────────────────────────────────────────────────
-
+# ====================== 스텝 인덱서 (시작/재개/취소) ======================
 def start_index_builder(
     update_pct: Callable[[int, str | None], None],
     update_msg: Callable[[str], None],
@@ -376,7 +322,6 @@ def start_index_builder(
     old_sig = _load_signature(persist_dir)
 
     update_pct(5, "드라이브 변경 확인 중…")
-    # prepared 폴더만 인덱싱, chat_log는 재귀에서 제외
     remote = _fetch_drive_manifest(gcp_creds, gdrive_folder_id, exclude_folder_names=["chat_log"])
     local = _load_local_manifest(manifest_path)
 
@@ -453,7 +398,6 @@ def resume_index_builder(
     if is_cancelled and is_cancelled():
         return {"status": "cancelled"}
 
-    # 한 스텝(batch_size) 만큼 처리
     for _ in range(min(batch_size, len(pending))):
         if is_cancelled and is_cancelled():
             return {"status": "cancelled"}
@@ -473,7 +417,7 @@ def resume_index_builder(
             done_ids.add(fid)
             _save_ckpt(persist_dir, {"done_ids": list(done_ids)})
 
-            pct = 8 + int(80 * processed / max(total, 1))  # 8→88
+            pct = 8 + int(80 * processed / max(total, 1))
             update_pct(pct, f"로딩 {processed}/{total} — {name}")
             job["last_pct"] = pct
             time.sleep(0.01)
@@ -481,12 +425,10 @@ def resume_index_builder(
             skipped.append({"name": name, "mime": mime, "reason": str(e)})
             update_msg(f"⚠️ 스킵: {name} ({mime}) — {e}")
 
-    # 중간 저장
     _persist_index(index, persist_dir)
     job["processed"] = processed
 
     if not pending:
-        # 마무리
         update_pct(92, "인덱스 저장 중…")
         _persist_index(index, persist_dir)
         _clear_ckpt(persist_dir)
@@ -502,25 +444,41 @@ def resume_index_builder(
         }
         return {"status": "done", "index": index}
 
-    return {
-        "status": "running",
-        "pct": job.get("last_pct", 8),
-        "msg": f"진행 중… ({processed}/{total})"
-    }
+    return {"status": "running", "pct": job.get("last_pct", 8), "msg": f"진행 중… ({processed}/{total})"}
 
 def cancel_index_builder(job: dict) -> None:
     job["pending"].clear()
 
+# ============================ QA 유틸 =============================
+def make_llm(provider: str, api_key: str, model: str, temperature: float = 0.0):
+    if provider == "google":
+        from llama_index.llms.google_genai import GoogleGenAI
+        return GoogleGenAI(api_key=api_key, model=model, temperature=temperature)
+    elif provider == "openai":
+        from llama_index.llms.openai import OpenAI
+        return OpenAI(api_key=api_key, model=model, temperature=temperature)
+    else:
+        raise ValueError(f"Unknown llm provider: {provider}")
 
-# ─────────────────────────────────────────────────────────────
-# QA 유틸
-# ─────────────────────────────────────────────────────────────
+def set_embed_provider(provider: str, api_key: str, model: str) -> None:
+    from llama_index.core import Settings
+    if provider == "google":
+        from llama_index.embeddings.google_genai import GoogleGenAIEmbedding
+        Settings.embed_model = GoogleGenAIEmbedding(model=model, api_key=api_key)
+    elif provider == "openai":
+        from llama_index.embeddings.openai import OpenAIEmbedding
+        Settings.embed_model = OpenAIEmbedding(model=model, api_key=api_key)
+    else:
+        raise ValueError(f"Unknown embed provider: {provider}")
+
+def llm_complete(llm, prompt: str, temperature: float = 0.0) -> str:
+    try:
+        resp = llm.complete(prompt)
+        return getattr(resp, "text", str(resp))
+    except AttributeError:
+        return llm.predict(prompt)
 
 def get_text_answer(query_engine, question: str, system_prompt: str) -> str:
-    """
-    원칙: 업로드 자료를 최우선으로 검색하되, 충분한 근거가 없을 때는
-    일반 지식을 보완적으로 사용(그 사실을 답변에 명시).
-    """
     try:
         full_query = (
             f"{system_prompt}\n\n"
@@ -534,17 +492,12 @@ def get_text_answer(query_engine, question: str, system_prompt: str) -> str:
         answer_text = str(response)
         try:
             files = [n.metadata.get('file_name', '알 수 없음') for n in getattr(response, "source_nodes", [])]
-            source_files = ", ".join(sorted(set(files))) if files else "출처 정보 없음"
+            source_files = ", ".join(sorted(list(set(files)))) if files else "출처 정보 없음"
         except Exception:
             source_files = "출처 정보 없음"
         return f"{answer_text}\n\n---\n*참고 자료: {source_files}*"
     except Exception as e:
         return f"텍스트 답변 생성 중 오류 발생: {e}"
-
-
-# ─────────────────────────────────────────────────────────────
-# 미리보기
-# ─────────────────────────────────────────────────────────────
 
 def preview_drive_files(max_items: int = 10) -> tuple[bool, str, list[dict]]:
     try:
