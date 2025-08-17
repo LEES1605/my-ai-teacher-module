@@ -1,8 +1,9 @@
 # app.py — 스텝 인덱싱(중간취소/재개) + 두뇌준비 안정화
 #        + 인덱싱 보고서(스킵 파일 표시)
 #        + Drive 대화로그 저장(❶ OAuth: Markdown / ❷ 서비스계정: JSONL, chat_log/)
+#        + 두 모델 모두 "자료 우선 → 부족 시 교사지식 보완"
+#        + 긴 지문 자동 보조(요약+원문일부) & 좁게→넓게 RAG 폴백
 #        + 페르소나: 🤖Gemini(친절/꼼꼼), 🤖ChatGPT(유머러스/보완)
-#        + 양쪽 모두 RAG 우선, 부족 시 "(자료 밖 지식)"으로 최소 보완
 
 # ===== Imports =====
 import os
@@ -19,7 +20,7 @@ import streamlit as st
 if not hasattr(st, "_qp_compat_patched"):
     def _compat_get_query_params():
         try:
-            raw = dict(st.query_params)      # {'k': 'v'} or {'k': ['a','b']}
+            raw = dict(st.query_params)
             return {k: (v if isinstance(v, list) else [v]) for k, v in raw.items()}
         except Exception:
             return {}
@@ -46,7 +47,7 @@ from src.config import settings
 
 # RAG/인덱싱 유틸(스텝 빌더)
 from src.rag_engine import (
-    set_embed_provider, make_llm, get_text_answer, CancelledError,
+    set_embed_provider, make_llm, get_text_answer, llm_complete, CancelledError,
     start_index_builder, resume_index_builder, cancel_index_builder,
     smoke_test_drive, preview_drive_files,
 )
@@ -60,27 +61,15 @@ from src.drive_log import save_chatlog_markdown_oauth
 # ❷ 서비스계정으로 JSONL 저장 시 chat_log/ 보장
 from src.drive_log import get_chatlog_folder_id
 
+# OAuth 헬퍼
+from src.google_oauth import (
+    start_oauth, is_signed_in, build_drive_service, get_user_email, sign_out,
+    finish_oauth_if_redirected,
+)
+
 # 페르소나 프롬프트
 from src.prompts import EXPLAINER_PROMPT, ANALYST_PROMPT, READER_PROMPT
 
-# ===== 공통 규칙(업로드 자료 최우선 + 부족분만 보강) =====
-RAG_FIRST_RULES = (
-    "규칙: 반드시 업로드된 학습 자료(문서/슬라이드 등)에서 근거를 먼저 찾는다. "
-    "자료에 직접 근거가 없으면 그때에만 일반 지식으로 짧게 보완하되, "
-    "보강한 문장 앞에 '(자료 밖 지식)'이라고 표시한다. "
-    "자료 근거가 불충분하면 그 사실을 명확히 밝힌다."
-)
-
-# 두 캐릭터 스타일
-GEMINI_STYLE = (
-    "당신은 착하고 똑똑한 친구 같은 교사입니다. 지나치게 어렵게 말하지 말고, "
-    "칭찬과 격려를 곁들여 차분히 안내하세요. 핵심 규칙은 정확성입니다."
-)
-CHATGPT_REVIEW_STYLE = (
-    "당신은 유머러스하지만 정확한 동료 교사입니다. 동료(Gemini)의 답을 읽고 "
-    "빠진 부분을 보완/교정하고, 마지막에 <최종 정리>를 제시하세요. 과한 농담은 피하고, "
-    "짧고 명료한 유머 한두 줄만 허용됩니다."
-)
 
 # ===== 런타임 안정화 환경변수 =====
 os.environ["STREAMLIT_SERVER_FILE_WATCHER_TYPE"] = "none"
@@ -94,8 +83,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-# OAuth 리다이렉트 처리 (페이지 설정 직후)
-from src.google_oauth import finish_oauth_if_redirected
+# OAuth 리다이렉트 처리는 페이지 설정 직후
 finish_oauth_if_redirected()
 
 # ===== 세션 상태(먼저 정의! 이후에 ss 참조) =====
@@ -117,12 +105,14 @@ render_header()
 st.info("✅ 변경이 있을 때만 인덱싱합니다. 저장된 두뇌가 있으면 즉시 불러옵니다. (중간 취소/재개 지원)")
 
 # ===== 사이드바: 자동저장 토글 + OAuth 로그인 =====
-from src.google_oauth import start_oauth, is_signed_in, build_drive_service, get_user_email, sign_out
-
 with st.sidebar:
-    ss.auto_save_chatlog = st.toggle("대화 자동 저장 (OAuth/내 드라이브, Markdown)", value=ss.auto_save_chatlog)
-    ss.save_logs = st.toggle("대화 JSONL 저장 (서비스계정/chat_log/)", value=ss.save_logs,
-                             help="공유드라이브 Writer 권한 필요. 쿼터 문제 시 끄기 권장.")
+    ss.auto_save_chatlog = st.toggle(
+        "대화 자동 저장 (OAuth/내 드라이브, Markdown)", value=ss.auto_save_chatlog
+    )
+    ss.save_logs = st.toggle(
+        "대화 JSONL 저장 (서비스계정/chat_log/)", value=ss.save_logs,
+        help="공유드라이브 Writer 권한 필요. 쿼터 문제 시 끄기 권장."
+    )
     st.markdown("---")
     st.markdown("### Google 로그인 (내 드라이브 저장)")
     if not is_signed_in():
@@ -163,8 +153,10 @@ with col1:
             st.error(msg)
 with col2:
     ok, msg = smoke_test_drive()
-    if ok: st.success(msg)
-    else:  st.warning(msg)
+    if ok:
+        st.success(msg)
+    else:
+        st.warning(msg)
 
 # ===== 인덱싱 보고서(스킵 파일 확인) =====
 rep = st.session_state.get("indexing_report")
@@ -237,14 +229,14 @@ def run_prepare_both_step():
     persist_dir = f"{getattr(settings,'PERSIST_DIR','/tmp/my_ai_teacher/storage_gdrive')}_shared"
 
     if job is None:
-        # 처음 시작 (빠른 모드 제거 → 전체 인덱싱)
+        # 처음 시작
         res = start_index_builder(
             update_pct=upd, update_msg=umsg,
             gdrive_folder_id=settings.GDRIVE_FOLDER_ID,
             raw_sa=settings.GDRIVE_SERVICE_ACCOUNT_JSON,
             persist_dir=persist_dir,
             manifest_path=getattr(settings, "MANIFEST_PATH", "/tmp/my_ai_teacher/drive_manifest.json"),
-            max_docs=None,                 # 🔸 빠른 모드 제거
+            max_docs=None,                     # 빠른 옵션 제거 → 전체 인덱스
             is_cancelled=_is_cancelled,
         )
         status = res.get("status")
@@ -281,16 +273,19 @@ def run_prepare_both_step():
             _render_progress(o_bar, o_msg, 100, "인덱싱 실패")
             ss.prep_both_running = False; return
 
-    # 3) 인덱스 준비 완료 → LLM 2개 준비 + QE 생성
+    # 3) 인덱스 준비 완료 → LLM 2개 준비 + QE(좁게/넓게) 생성
     try:
         g_llm = make_llm("google", settings.GEMINI_API_KEY.get_secret_value(),
                          getattr(settings, "LLM_MODEL", "gemini-1.5-pro"),
                          float(ss.get("temperature", 0.0)))
         ss["llm_google"] = g_llm
+
+        # 좁게 / 넓게
         ss["qe_google"] = index.as_query_engine(
-            llm=g_llm,
-            response_mode="compact",
-            similarity_top_k=min(3, int(ss.get("similarity_top_k", getattr(settings, "SIMILARITY_TOP_K", 5)))),
+            llm=g_llm, response_mode="compact", similarity_top_k=3
+        )
+        ss["qe_google_wide"] = index.as_query_engine(
+            llm=g_llm, response_mode="compact", similarity_top_k=6
         )
         _render_progress(g_bar, g_msg, 100, "완료!")
     except Exception as e:
@@ -302,10 +297,12 @@ def run_prepare_both_step():
                              getattr(settings, "OPENAI_LLM_MODEL", "gpt-4o-mini"),
                              float(ss.get("temperature", 0.0)))
             ss["llm_openai"] = o_llm
+
             ss["qe_openai"] = index.as_query_engine(
-                llm=o_llm,
-                response_mode="compact",
-                similarity_top_k=min(3, int(ss.get("similarity_top_k", getattr(settings, "SIMILARITY_TOP_K", 5)))),
+                llm=o_llm, response_mode="compact", similarity_top_k=3
+            )
+            ss["qe_openai_wide"] = index.as_query_engine(
+                llm=o_llm, response_mode="compact", similarity_top_k=6
             )
             _render_progress(o_bar, o_msg, 100, "완료!")
         else:
@@ -353,13 +350,13 @@ st.markdown("---")
 st.subheader("💬 그룹토론 — 학생 ↔ 🤖Gemini(친절/꼼꼼) ↔ 🤖ChatGPT(유머러스/보완)")
 
 ready_google = "qe_google" in ss
-ready_openai = "llm_openai" in ss  # RAG가 없어도 폴백 보완은 가능
+ready_openai = "qe_openai" in ss
 
 if ss.session_terminated:
     st.warning("세션이 종료된 상태입니다. 새로고침으로 다시 시작하세요.")
     st.stop()
 
-if "qe_google" not in ss:
+if not ready_google:
     st.info("먼저 **[🚀 한 번에 준비하기]** 를 클릭해 두뇌를 준비하세요. (OpenAI 키가 없으면 Gemini만 응답)")
     st.stop()
 
@@ -368,11 +365,13 @@ for m in ss.messages:
     with st.chat_message(m["role"]):
         st.markdown(m["content"])
 
-# 유틸: 참고자료 꼬리 제거 & 맥락 구성
+# ===== 유틸 =====
 def _strip_sources(text: str) -> str:
+    # 하단 참고자료 블록 제거
     return re.sub(r"\n+---\n\*참고 자료:.*$", "", text, flags=re.DOTALL)
 
 def _build_context_for_models(messages: list[dict], limit_pairs: int = 2, max_chars: int = 2000) -> str:
+    """최근 user/assistant 쌍을 limit_pairs개까지 모아 맥락 문자열 생성."""
     pairs, buf_user = [], None
     for m in reversed(messages):
         role, content = m.get("role"), str(m.get("content", "")).strip()
@@ -388,15 +387,53 @@ def _build_context_for_models(messages: list[dict], limit_pairs: int = 2, max_ch
     ctx = "\n\n---\n\n".join(blocks).strip()
     return ctx[-max_chars:] if len(ctx) > max_chars else ctx
 
-# 페르소나 합성
 def _persona():
     mode = st.session_state.get("mode_select", "💬 이유문법 설명")
     base = EXPLAINER_PROMPT if mode == "💬 이유문법 설명" else (ANALYST_PROMPT if mode == "🔎 구문 분석" else READER_PROMPT)
     common = (
         "역할: 학생의 영어 실력을 돕는 AI 교사.\n"
-        "규칙: 근거가 불충분하면 그 사실을 명확히 밝힌다. 예시 문장은 짧고 점진적으로.\n"
+        "자료 우선 원칙: 업로드된 학습 자료의 근거를 먼저 사용한다. 근거가 불충분하면 그 사실을 밝히고, "
+        "부족한 부분만 교사 지식으로 보완한다. 최종 답변 끝에 사용한 자료 파일명을 적는다.\n"
+        "규칙: 예시는 짧고 점진적으로.\n"
     )
     return base + "\n" + common
+
+GEMINI_STYLE = (
+    "당신은 착하고 똑똑한 친구 같은 교사입니다. 지나치게 어렵게 말하지 말고, "
+    "칭찬과 격려를 곁들여 차분히 안내하세요. 핵심 규칙은 정확성입니다."
+)
+CHATGPT_REVIEW_STYLE = (
+    "당신은 유머러스하지만 정확한 동료 교사입니다. 동료(Gemini)의 답을 읽고 "
+    "빠진 부분을 보완/교정하고, 마지막에 <최종 정리>를 제시하세요. 과한 농담은 피하고, "
+    "짧고 명료한 유머 한두 줄만 허용됩니다."
+)
+
+def answer_with_fallback(qe_narrow, qe_wide, question, system_prompt):
+    """먼저 좁게(top_k=3) → 부족하면 넓게(top_k=6) 재시도."""
+    ans1 = get_text_answer(qe_narrow, question, system_prompt)
+    has_src = ("*참고 자료:" in ans1) and ("출처 정보 없음" not in ans1)
+    if has_src and len(ans1) > 150:
+        return ans1
+    ans2 = get_text_answer(qe_wide, question, system_prompt)
+    return ans2
+
+def _maybe_compress(text: str, max_chars: int = 4000) -> tuple[str, bool]:
+    """입력이 너무 길면 간단 요약을 앞에 덧붙이고, 원문은 안전 길이만 포함."""
+    if len(text) <= max_chars:
+        return text, False
+    llm = ss.get("llm_google") or ss.get("llm_openai")
+    if not llm:
+        head = text[:max_chars]
+        return f"[요약불가: 모델 미준비]\n\n{head}\n\n[원문 생략됨…]", True
+    prompt = (
+        "다음 글을 8줄 이내 bullet로 핵심 키워드/주제문/인물·사실만 요약하라. "
+        "고유명사와 용어는 보존하라. 수식·예시는 최소화할 것.\n\n"
+        f"[원문]\n{text[:12000]}"
+    )
+    summary = llm_complete(llm, prompt)
+    head = text[:2000]; tail = text[-1000:]
+    fused = f"[요약]\n{summary}\n\n[원문 일부]\n{head}\n…(중략)…\n{tail}"
+    return fused, True
 
 # 모드 스위처
 mode = st.radio("학습 모드", ["💬 이유문법 설명", "🔎 구문 분석", "📚 독해 및 요약"],
@@ -429,14 +466,14 @@ if user_input:
     # JSONL 로그: 사용자
     _log_try([chat_store.make_entry(ss.session_id, "user", "user", user_input, mode, model="user")])
 
-    # 1) Gemini 1차 (RAG 우선)
+    # 1) Gemini 1차 (이전 맥락 + 현재 질문; 길이 초과 시 자동 보조)
     with st.spinner("🤖 Gemini 선생님이 먼저 답변합니다…"):
         prev_ctx = _build_context_for_models(ss.messages[:-1], limit_pairs=2, max_chars=2000)
-        gemini_query = (f"[이전 대화]\n{prev_ctx}\n\n" if prev_ctx else "") + f"[학생 질문]\n{user_input}"
-        ans_g = get_text_answer(
-            ss["qe_google"],
-            gemini_query,
-            _persona() + "\n" + GEMINI_STYLE + "\n" + RAG_FIRST_RULES
+        user_payload, _ = _maybe_compress(user_input, max_chars=4000)
+        gemini_query = (f"[이전 대화]\n{prev_ctx}\n\n" if prev_ctx else "") + f"[학생 질문]\n{user_payload}"
+        ans_g = answer_with_fallback(
+            ss["qe_google"], ss.get("qe_google_wide"),
+            gemini_query, _persona() + "\n" + GEMINI_STYLE
         )
 
     content_g = f"**🤖 Gemini**\n\n{ans_g}"
@@ -450,56 +487,22 @@ if user_input:
         model=getattr(settings, "LLM_MODEL", "gemini")
     )])
 
-    # 2) ChatGPT 보완/검증 — RAG 우선(OpenAI QueryEngine) → 실패 시 LLM 폴백
+    # 2) ChatGPT 보완/검증 — RAG + 동료답변 보완
     if ready_openai:
-        review_directive = (
-            "역할: 당신은 유머러스하지만 정확한 동료 영어교사다. "
-            "동료(Gemini)의 1차 답변을 바탕으로 교정/보완하고 마무리한다.\n"
-            "출력 지침:\n"
-            "1) 잘못된 부분은 바로잡고 누락 포인트를 채운다.\n"
-            "2) 예문 2~3개(간단/점진적) 추가.\n"
-            "3) 마지막에 <최종 정리>를 불릿 3~5개로 제시.\n"
-        )
-
-        prev_ctx_all = _build_context_for_models(ss.messages, limit_pairs=2, max_chars=2000)  # Gemini 방금 답 포함
-        rag_query_for_openai = (
-            (f"[이전 대화]\n{prev_ctx_all}\n\n" if prev_ctx_all else "") +
-            f"[학생 질문]\n{user_input}\n\n"
-            f"[동료의 1차 답변(Gemini)]\n{_strip_sources(ans_g)}\n\n"
-            "[작업]\n위 내용을 바탕으로 업로드 자료를 최우선으로 점검·보완하고, "
-            "누락/오류를 고친 뒤 간결하게 마무리하라."
-        )
-
-        used_rag = False
-        ans_o = None
-        try:
-            if "qe_openai" in ss:
-                ans_o = get_text_answer(
-                    ss["qe_openai"],
-                    rag_query_for_openai,
-                    _persona() + "\n" + CHATGPT_REVIEW_STYLE + "\n" + RAG_FIRST_RULES + "\n" + review_directive,
-                )
-                used_rag = True
-        except Exception as e:
-            used_rag = False
-            ans_o = f"(RAG 보완 실패로 폴백합니다) 에러: {e}"
-
-        if not used_rag:
-            from src.rag_engine import llm_complete
-            augmented = (
+        with st.spinner("🤝 ChatGPT 선생님이 보완/검증 중…"):
+            prev_ctx_all = _build_context_for_models(ss.messages, limit_pairs=2, max_chars=2000)  # Gemini 방금 답 포함
+            augmented_question = (
                 (f"[이전 대화]\n{prev_ctx_all}\n\n" if prev_ctx_all else "") +
                 f"[학생 질문]\n{user_input}\n\n"
                 f"[동료의 1차 답변(Gemini)]\n{_strip_sources(ans_g)}\n\n"
-                f"[당신의 작업]\n업로드 자료를 우선한다는 전제를 유지하되, 자료 참조가 불가능하면 "
-                f"간단한 일반 지식으로만 보완하라. 보강 문장 앞에는 '(자료 밖 지식)'을 붙여라."
+                "요청: 위 자료와 답변을 참고해 틀린 점을 교정하고, 빠진 근거를 자료에서 다시 찾아 보완하여 "
+                "학생이 이해하기 쉽게 마무리 설명하라."
             )
-            try:
-                ans_o = llm_complete(
-                    ss.get("llm_openai"),
-                    _persona() + "\n" + CHATGPT_REVIEW_STYLE + "\n" + review_directive + "\n\n" + augmented
-                )
-            except Exception as e:
-                ans_o = f"(보완 단계 오류로 Gemini 답변만 제공합니다)\n\n에러: {e}"
+            # ChatGPT도 자료 우선으로 다시 조회
+            ans_o = answer_with_fallback(
+                ss["qe_openai"], ss.get("qe_openai_wide"),
+                augmented_question, _persona() + "\n" + CHATGPT_REVIEW_STYLE
+            )
 
         content_o = f"**🤖 ChatGPT**\n\n{ans_o}"
         ss.messages.append({"role": "assistant", "content": content_o})
@@ -509,7 +512,7 @@ if user_input:
         with st.chat_message("assistant"):
             st.info("ChatGPT 키가 없어 Gemini만 응답했습니다. OPENAI_API_KEY를 추가하면 보완/검증이 활성화됩니다.")
 
-    # ❶ OAuth: Markdown 자동 저장 (내 드라이브, my-ai-teacher-data/chat_log/)
+    # ❶ OAuth: Markdown 자동 저장 (내 드라이브, 선택 폴더)
     if ss.auto_save_chatlog and ss.messages:
         try:
             if is_signed_in():
