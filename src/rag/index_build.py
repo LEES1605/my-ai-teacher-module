@@ -6,7 +6,7 @@ from typing import Callable, Mapping, Dict, List, Any
 import streamlit as st
 
 from .storage import _make_storage_context
-from .checkpoint import _load_checkpoint, _mark_done
+from .checkpoint import _load_checkpoint, _mark_done, save_checkpoint_copy_to_persist
 from .quality import get_opt, preprocess_docs, maybe_summarize_docs, load_quality_report, save_quality_report
 
 def build_index_with_checkpoint(
@@ -35,7 +35,8 @@ def build_index_with_checkpoint(
     update_pct(15, "Drive 리더 초기화")
     loader = GoogleDriveReader(service_account_key=gcp_creds)
 
-    cp = _load_checkpoint()
+    # persist_dir에 남아있을 수 있는 checkpoint.json도 자동 로드
+    cp = _load_checkpoint(also_from_persist_dir=persist_dir)
     todo_ids: List[str] = []
     for fid, meta in remote_manifest.items():
         done = cp.get(fid)
@@ -61,7 +62,7 @@ def build_index_with_checkpoint(
     for k in ("processed_docs","kept_docs","skipped_low_text","skipped_dup","total_chars"):
         qrep["summary"].setdefault(k, 0)
     qrep.setdefault("files", {})
-    seen_hashes = set(h for h in [])  # 초기화(파일별로 누적)
+    seen_hashes = set(h for h in [])  # 초기화
 
     if pending == 0:
         update_pct(95, "변경 없음 → 저장본 그대로 사용")
@@ -92,9 +93,10 @@ def build_index_with_checkpoint(
         )
         maybe_summarize_docs(kept)
 
-        # 3) 품질 리포트 갱신(파일 단위)
+        # 3) 품질 리포트 갱신
+        from_name = meta.get("name")
         qrep.setdefault("files", {})[fid] = {
-            "name": fname,
+            "name": from_name or fid,
             "md5": meta.get("md5"),
             "modifiedTime": meta.get("modifiedTime"),
             "kept": stats["kept"],
@@ -111,7 +113,8 @@ def build_index_with_checkpoint(
         save_quality_report(qrep)
 
         if stats["kept"] == 0:
-            _mark_done(cp, fid, meta)  # 완료 체크만
+            _mark_done(cp, fid, meta)                     # 완료 체크
+            save_checkpoint_copy_to_persist(cp, persist_dir)  # persist_dir에도 동기화
             pct = 30 + int((i / max(1, pending)) * 60)
             update_pct(pct, f"건너뜀 • {fname} (저품질/중복)")
             if should_stop():
@@ -128,6 +131,7 @@ def build_index_with_checkpoint(
             )
             storage_context.persist(persist_dir=persist_dir)  # 부분 저장
             _mark_done(cp, fid, meta)                         # 파일 완료 기록
+            save_checkpoint_copy_to_persist(cp, persist_dir)  # persist_dir에도 동기화
         except Exception as e:
             st.error(f"인덱스 생성 중 오류: {fname}")
             with st.expander("자세한 오류 보기"):
