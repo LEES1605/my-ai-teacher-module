@@ -1,11 +1,16 @@
 # src/rag/engine.py
 from __future__ import annotations
 import os, json
+from datetime import datetime
 from typing import Callable, Any
 
 import streamlit as st
 from src.config import settings
-from .drive import _normalize_sa, _validate_sa, fetch_drive_manifest
+from .drive import (
+    _normalize_sa, _validate_sa, fetch_drive_manifest,
+    try_restore_index_from_drive, export_brain_to_drive, prune_old_backups,
+    INDEX_BACKUP_PREFIX,
+)
 from .checkpoint import CHECKPOINT_PATH
 from .index_build import build_index_with_checkpoint
 
@@ -20,10 +25,25 @@ def get_or_build_index(
 ):
     """
     Drive 변경을 감지해 저장본을 쓰거나, 변경 시에만 재인덱싱(체크포인트 & 중지 지원).
+    + (옵션) 로컬 저장본 없으면 드라이브 백업에서 자동 복원
+    + (옵션) 빌드 성공 시 자동 백업 업로드 + 보관 N개 유지
     """
     update_pct(5, "드라이브 변경 확인 중…")
     gcp_creds = _validate_sa(_normalize_sa(raw_sa))
 
+    # 0) 로컬 저장본이 없고 자동 복원이 켜져 있으면 시도
+    if settings.AUTO_RESTORE_ON_START and not os.path.exists(persist_dir):
+        update_msg("🗂️ 로컬 저장본 없음 → 드라이브 백업 자동 복원 시도")
+        try:
+            restored = try_restore_index_from_drive(gcp_creds, persist_dir, gdrive_folder_id)
+            if restored:
+                update_msg("✅ 드라이브 백업 복원 완료")
+                update_pct(20, None)
+        except Exception:
+            # 실패해도 계속 진행 (처음부터 빌드)
+            pass
+
+    # 1) 매니페스트 비교
     remote = fetch_drive_manifest(gcp_creds, gdrive_folder_id)
 
     local = None
@@ -64,7 +84,7 @@ def get_or_build_index(
         should_stop=should_stop
     )
 
-    # '완주' 상태면 새 매니페스트 저장 + (가능하면) 체크포인트 정리
+    # '완주' 상태면 새 매니페스트 저장 + 체크포인트 정리 + (옵션) 자동 백업
     try:
         if not (should_stop and should_stop()):
             os.makedirs(os.path.dirname(manifest_path), exist_ok=True)
@@ -75,7 +95,29 @@ def get_or_build_index(
                 with open(CHECKPOINT_PATH, "r", encoding="utf-8") as f:
                     cp = json.load(f)
                 if set(cp.keys()) == set(remote.keys()):
-                    os.remove(CHECKPOINT_PATH)
+                    try:
+                        os.remove(CHECKPOINT_PATH)
+                    except Exception:
+                        pass
+
+            # ✅ 자동 백업(옵션)
+            if settings.AUTO_BACKUP_ON_SUCCESS:
+                update_msg("☁️ 백업 업로드 중…")
+                fname = f"{INDEX_BACKUP_PREFIX}-{datetime.now():%Y%m%d_%H%M%S}.zip"
+                try:
+                    _, name = export_brain_to_drive(gcp_creds, persist_dir, gdrive_folder_id, filename=fname)
+                    update_msg(f"✅ 백업 업로드 완료: {name}")
+                except Exception as e:
+                    update_msg(f"⚠️ 백업 업로드 실패: {e}")
+
+                # 보관 개수 유지
+                try:
+                    deleted = prune_old_backups(gcp_creds, gdrive_folder_id, keep=settings.BACKUP_KEEP_N)
+                    if deleted:
+                        update_msg(f"🧹 오래된 백업 정리 {len(deleted)}건")
+                except Exception:
+                    pass
+
     except Exception:
         pass
 
