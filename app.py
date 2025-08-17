@@ -13,7 +13,7 @@ import time
 import streamlit as st
 
 # 1) 내부 모듈 임포트
-from src.config import settings, APP_DATA_DIR, PERSIST_DIR
+from src.config import settings, APP_DATA_DIR, PERSIST_DIR, MANIFEST_PATH
 from src.ui import load_css, safe_render_header, ensure_progress_css, render_progress_bar
 from src.prompts import EXPLAINER_PROMPT, ANALYST_PROMPT, READER_PROMPT
 from src.rag_engine import get_or_build_index, init_llama_settings, get_text_answer
@@ -47,7 +47,11 @@ if admin_login_flow(settings.ADMIN_PASSWORD or ""):
             temp = st.slider("LLM temperature", 0.0, 1.0, float(st.session_state["temperature"]), 0.05)
         with col3:
             st.session_state.setdefault("response_mode", settings.RESPONSE_MODE)
-            mode_sel = st.selectbox("response_mode", ["compact", "refine", "tree_summarize"], index=["compact","refine","tree_summarize"].index(st.session_state["response_mode"]))
+            mode_sel = st.selectbox(
+                "response_mode",
+                ["compact", "refine", "tree_summarize"],
+                index=["compact", "refine", "tree_summarize"].index(st.session_state["response_mode"]),
+            )
 
         if st.button("적용"):
             st.session_state["similarity_top_k"] = k
@@ -57,7 +61,7 @@ if admin_login_flow(settings.ADMIN_PASSWORD or ""):
 
     with st.expander("🛠️ 관리자 도구", expanded=False):
         if st.button("📥 강의 자료 다시 불러오기 (두뇌 초기화)"):
-            import shutil, os
+            import shutil
             if os.path.exists(PERSIST_DIR):
                 shutil.rmtree(PERSIST_DIR)
             if "query_engine" in st.session_state:
@@ -91,10 +95,12 @@ def main():
             update_msg("두뇌 준비를 시작합니다…")
 
             # LLM/Embedding 설정(온디맨드)
-            init_llama_settings(api_key=settings.GEMINI_API_KEY.get_secret_value(),
-                                llm_model=settings.LLM_MODEL,
-                                embed_model=settings.EMBED_MODEL,
-                                temperature=float(st.session_state.get("temperature", 0.0)))
+            init_llama_settings(
+                api_key=settings.GEMINI_API_KEY.get_secret_value(),
+                llm_model=settings.LLM_MODEL,
+                embed_model=settings.EMBED_MODEL,
+                temperature=float(st.session_state.get("temperature", 0.0)),
+            )
 
             # 인덱스 준비(변경 감지 → 필요 시 재빌드)
             index = get_or_build_index(
@@ -103,23 +109,24 @@ def main():
                 gdrive_folder_id=settings.GDRIVE_FOLDER_ID,
                 raw_sa=settings.GDRIVE_SERVICE_ACCOUNT_JSON,
                 persist_dir=PERSIST_DIR,
-                manifest_path=settings.MANIFEST_PATH,
+                manifest_path=MANIFEST_PATH,  # ← 여기!
             )
 
             # 질의 엔진
             st.session_state.query_engine = index.as_query_engine(
                 response_mode=st.session_state.get("response_mode", settings.RESPONSE_MODE),
-                similarity_top_k=int(st.session_state.get("similarity_top_k", settings.SIMILARITY_TOP_K))
+                similarity_top_k=int(st.session_state.get("similarity_top_k", settings.SIMILARITY_TOP_K)),
             )
             update_pct(100, "완료!")
             time.sleep(0.6)
-            bar_slot.empty(); msg_slot.empty()
+            bar_slot.empty()
+            msg_slot.empty()
             st.rerun()
 
         st.stop()
 
     # === 채팅 UI ===
-    if 'messages' not in st.session_state:
+    if "messages" not in st.session_state:
         st.session_state.messages = []
 
     for message in st.session_state.messages:
@@ -132,7 +139,7 @@ def main():
         "**어떤 도움이 필요한가요?**",
         ["💬 이유문법 설명", "🔎 구문 분석", "📚 독해 및 요약"],
         horizontal=True,
-        key="mode_select"
+        key="mode_select",
     )
 
     prompt = st.chat_input("질문을 입력하거나, 분석/요약할 문장이나 글을 붙여넣으세요.")
