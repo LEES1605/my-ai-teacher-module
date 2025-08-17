@@ -11,50 +11,38 @@ import streamlit as st
 st.set_page_config(page_title="나의 AI 영어 교사", layout="wide", initial_sidebar_state="collapsed")
 
 # === 부트 가드 & OAuth 안전 초기화 ===
-import time
-
 ss = st.session_state
 ss.setdefault("_boot_log", [])
 ss.setdefault("_oauth_checked", False)
 
-def _boot(msg):
-    ss["_boot_log"].append(msg)
+def _boot(msg): ss["_boot_log"].append(msg)
 
-# 부트 로그는 사이드바에 잠깐 노출(문제 원인 파악용)
 with st.sidebar:
     st.caption("🛠 Boot log (임시)")
-    log_box = st.empty()
+    _boot_box = st.empty()
 
 def _flush_boot():
-    try:
-        log_box.write("\n".join(ss["_boot_log"]) or "(empty)")
-    except Exception:
-        pass
+    try: _boot_box.write("\n".join(ss["_boot_log"]) or "(empty)")
+    except Exception: pass
 
 _boot("A: page_config set")
 
-# ⚠️ secrets로 OAuth를 잠시 끌 수 있는 스위치(문제시 DISABLE_OAUTH=1 설정)
 OAUTH_DISABLED = str(st.secrets.get("DISABLE_OAUTH", "0")).strip() == "1"
 if OAUTH_DISABLED:
-    _boot("B: OAuth disabled via secrets")
-    _flush_boot()
+    _boot("B: OAuth disabled via secrets"); _flush_boot()
 else:
-    # finish_oauth_if_redirected() 가 rerun을 야기할 수 있으므로 가드
     if not ss["_oauth_checked"]:
         ss["_oauth_checked"] = True
-        _boot("B: calling finish_oauth_if_redirected()...")
-        _flush_boot()
+        _boot("B: calling finish_oauth_if_redirected()..."); _flush_boot()
         try:
             from src.google_oauth import finish_oauth_if_redirected
-            finish_oauth_if_redirected()   # 내부에서 st.query_params를 건드리면 rerun 가능
+            finish_oauth_if_redirected()
             _boot("C: finish_oauth_if_redirected() returned")
         except Exception as e:
             _boot(f"C: OAuth init error → {e!r}")
         _flush_boot()
 
-_boot("D: first UI can render")
-_flush_boot()
-
+_boot("D: first UI can render"); _flush_boot()
 
 # ===== 런타임 안정화 =====
 os.environ["STREAMLIT_SERVER_FILE_WATCHER_TYPE"] = "none"
@@ -62,11 +50,10 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 os.environ["STREAMLIT_SERVER_ENABLE_WEBSOCKET_COMPRESSION"] = "false"
 
 # ===== 세션 상태 =====
-ss = st.session_state
 ss.setdefault("session_id", uuid.uuid4().hex[:12])
 ss.setdefault("messages", [])
 ss.setdefault("auto_save_chatlog", True)    # OAuth Markdown 저장
-ss.setdefault("save_logs", False)           # SA JSONL 저장(기본 꺼둠: 쿼터 이슈 회피)
+ss.setdefault("save_logs", False)           # SA JSONL 저장(기본 꺼둠)
 ss.setdefault("prep_both_running", False)
 ss.setdefault("prep_both_done", ("qe_google" in ss) or ("qe_openai" in ss))
 ss.setdefault("prep_cancel_requested", False)
@@ -86,14 +73,11 @@ try:
     from src.google_oauth import finish_oauth_if_redirected
     if not st.secrets.get("OAUTH_DISABLE_FINISH"):
         if not ss.get("_oauth_finalized", False):
-            finalized = finish_oauth_if_redirected()  # code/state 있으면 토큰 교환
+            finalized = finish_oauth_if_redirected()
             if finalized:
                 ss["_oauth_finalized"] = True
-                # URL 파라미터 제거
-                try:
-                    st.query_params.clear()
-                except Exception:
-                    st.experimental_set_query_params()
+                try: st.query_params.clear()
+                except Exception: st.experimental_set_query_params()
                 st.rerun()
 except Exception as e:
     st.warning(f"OAuth finalize skipped: {e}")
@@ -115,18 +99,18 @@ with st.sidebar:
         if st.button("로그아웃"):
             sign_out(); st.rerun()
 
-# ===== Google Drive 연결 테스트 =====
+# ===== Google Drive 연결 테스트 (✅ try/except 중복 제거 버전) =====
 st.markdown("## 🔗 Google Drive 연결 테스트")
-st.caption("서비스계정 저장은 공유드라이브 Writer 권한이 필요합니다. 인덱싱 자체는 Readonly 권한이면 충분합니다.")
+st.caption("서비스계정 저장은 공유드라이브 Writer 권한이 필요합니다. 인덱싱은 Readonly 권한이면 충분합니다.")
 
 from src.config import settings
 from src.rag_engine import (
     smoke_test_drive,
     preview_drive_files,
-    drive_diagnostics,  # 누락 필드/포맷 진단
+    drive_diagnostics,   # 서비스계정 JSON 포맷/필수키 진단
 )
 
-# 1) 서비스계정 JSON 진단 (포맷/필수키/개행 등 확인)
+# 1) 서비스계정 JSON 진단
 ok_sa, diag = drive_diagnostics(settings.GDRIVE_SERVICE_ACCOUNT_JSON)
 if ok_sa:
     st.success("🔎 Service Account JSON OK")
@@ -135,7 +119,7 @@ else:
 with st.expander("서비스계정 JSON 진단 상세", expanded=not ok_sa):
     st.code(diag)
 
-# 포맷이 틀리면 아래 기능은 무의미하므로 바로 멈춤
+# 포맷이 틀리면 아래 기능은 의미 없으니 중단
 if not ok_sa:
     st.stop()
 
@@ -162,45 +146,7 @@ with c1:
             st.warning("폴더에 파일이 없거나 접근 권한이 부족합니다.")
         else:
             st.error(msg)
-
 with c2:
-    ok, msg = smoke_test_drive()
-    st.success(msg) if ok else st.warning(msg)
-
-
-# (원하시면 '폴더 파일 미리보기' 버튼은 기존 코드 유지)
-# ─────────────────────────────────────────────────────────────────
-
-except Exception:
-    st.error("`src.rag_engine` 임포트 실패")
-    import traceback, os as _os
-    st.write("파일 존재 여부:", _os.path.exists("src/rag_engine.py"))
-    with st.expander("임포트 스택", expanded=True):
-        st.code(traceback.format_exc())
-    st.stop()
-
-col1, col2 = st.columns([0.65, 0.35])
-with col1:
-    if st.button("폴더 파일 미리보기 (최신 10개)", use_container_width=True):
-        ok, msg, rows = preview_drive_files(max_items=10)
-        if ok and rows:
-            df = pd.DataFrame(rows)
-            df["type"] = df["mime"].str.replace("application/vnd.google-apps.", "", regex=False)
-            df = df.rename(columns={"modified": "modified_at"})[["name","link","type","modified_at"]]
-            st.dataframe(
-                df, use_container_width=True, height=360,
-                column_config={
-                    "name": st.column_config.TextColumn("파일명"),
-                    "link": st.column_config.LinkColumn("open", display_text="열기"),
-                    "type": st.column_config.TextColumn("유형"),
-                    "modified_at": st.column_config.TextColumn("수정시각"),
-                }, hide_index=True
-            )
-        elif ok:
-            st.warning("폴더에 파일이 없거나 접근할 수 없습니다.")
-        else:
-            st.error(msg)
-with col2:
     ok, msg = smoke_test_drive()
     st.success(msg) if ok else st.warning(msg)
 
@@ -220,30 +166,28 @@ if rep:
 # ===== 두뇌 준비(스텝) =====
 st.markdown("---"); st.subheader("🧠 두뇌 준비 — 저장본 로드 ↔ 변경 시 증분 인덱싱 (중간 취소/재개)")
 
-# 진행률 UI
 c_g, c_o = st.columns(2)
 with c_g: st.caption("Gemini 진행"); g_bar = st.empty(); g_msg = st.empty()
 with c_o: st.caption("ChatGPT 진행"); o_bar = st.empty(); o_msg = st.empty()
 
 def _render_progress(slot_bar, slot_msg, pct: int, msg: str | None = None):
     p = max(0, min(100, int(pct)))
-    slot_bar.markdown(f"""
-<div class="gp-wrap"><div class="gp-fill" style="width:{p}%"></div><div class="gp-label">{p}%</div></div>
-""", unsafe_allow_html=True)
+    slot_bar.markdown(
+        f"<div class='gp-wrap'><div class='gp-fill' style='width:{p}%'></div><div class='gp-label'>{p}%</div></div>",
+        unsafe_allow_html=True
+    )
     if msg is not None:
         slot_msg.markdown(f"<div class='gp-msg'>{msg}</div>", unsafe_allow_html=True)
 
-def _is_cancelled() -> bool:
-    return bool(ss.get("prep_cancel_requested", False))
+def _is_cancelled() -> bool: return bool(ss.get("prep_cancel_requested", False))
 
-from src.config import settings
 from src.rag_engine import (
     set_embed_provider, make_llm, get_text_answer, CancelledError,
     start_index_builder, resume_index_builder, cancel_index_builder
 )
 
 def run_prepare_both_step():
-    # 1) 임베딩 공급자 선택/설정
+    # 1) 임베딩 설정
     embed_provider = "openai"
     embed_api = (getattr(settings, "OPENAI_API_KEY", None).get_secret_value()
                  if getattr(settings, "OPENAI_API_KEY", None) else "")
@@ -263,11 +207,8 @@ def run_prepare_both_step():
         return
 
     # 2) 인덱스 스텝 진행
-    def upd(p, m=None):
-        _render_progress(g_bar, g_msg, p, m); _render_progress(o_bar, o_msg, p, m)
-    def umsg(m):
-        _render_progress(g_bar, g_msg, ss.get("p_shared", 0), m)
-        _render_progress(o_bar, o_msg, ss.get("p_shared", 0), m)
+    def upd(p, m=None): _render_progress(g_bar, g_msg, p, m); _render_progress(o_bar, o_msg, p, m)
+    def umsg(m): _render_progress(g_bar, g_msg, ss.get("p_shared", 0), m); _render_progress(o_bar, o_msg, ss.get("p_shared", 0), m)
 
     persist_dir = f"{getattr(settings,'PERSIST_DIR','/tmp/my_ai_teacher/storage_gdrive')}_shared"
     job = ss.get("index_job")
@@ -280,7 +221,7 @@ def run_prepare_both_step():
                 raw_sa=settings.GDRIVE_SERVICE_ACCOUNT_JSON,
                 persist_dir=persist_dir,
                 manifest_path=getattr(settings, "MANIFEST_PATH", "/tmp/my_ai_teacher/drive_manifest.json"),
-                max_docs=None,                      # 빠른모드 제거 → 전체
+                max_docs=None,  # 빠른모드 제거 → 전체
                 is_cancelled=_is_cancelled,
             )
         else:
@@ -295,21 +236,16 @@ def run_prepare_both_step():
             _render_progress(g_bar, g_msg, res.get("pct", 8), res.get("msg", "진행 중…"))
             _render_progress(o_bar, o_msg, res.get("pct", 8), res.get("msg", "진행 중…"))
             time.sleep(0.15); st.rerun(); return
-
         if status == "cancelled":
             ss.prep_both_running = False; ss.prep_cancel_requested = False; ss.index_job = None
             _render_progress(g_bar, g_msg, res.get("pct", 0), "사용자 취소")
-            _render_progress(o_bar, o_msg, res.get("pct", 0), "사용자 취소")
-            return
-
+            _render_progress(o_bar, o_msg, res.get("pct", 0), "사용자 취소"); return
         if status != "done":
             _render_progress(g_bar, g_msg, 100, "인덱싱 실패")
             _render_progress(o_bar, o_msg, 100, "인덱싱 실패")
-            ss.prep_both_running = False
-            return
+            ss.prep_both_running = False; return
 
-        index = res["index"]
-        ss.index_job = None
+        index = res["index"]; ss.index_job = None
 
     except Exception as e:
         ss.prep_both_running = False; ss.index_job = None
@@ -349,8 +285,7 @@ def run_prepare_both_step():
     except Exception as e:
         _render_progress(o_bar, o_msg, 100, f"ChatGPT 준비 실패: {e}")
 
-    ss.prep_both_running = False
-    ss.prep_both_done = True
+    ss.prep_both_running = False; ss.prep_both_done = True
     time.sleep(0.2); st.rerun()
 
 # 실행/취소 버튼
@@ -364,23 +299,17 @@ with right:
 
 if cancel_clicked and ss.prep_both_running:
     ss.prep_cancel_requested = True
-    if ss.get("index_job"):
-        cancel_index_builder(ss.index_job)
+    if ss.get("index_job"): cancel_index_builder(ss.index_job)
     st.rerun()
 
 if clicked and not (ss.prep_both_running or ss.prep_both_done):
-    ss.prep_cancel_requested = False
-    ss.prep_both_running = True
-    ss.index_job = None
-    st.rerun()
+    ss.prep_cancel_requested = False; ss.prep_both_running = True; ss.index_job = None; st.rerun()
 
-if ss.prep_both_running:
-    run_prepare_both_step()
+if ss.prep_both_running: run_prepare_both_step()
 
 st.caption("준비 버튼을 다시 활성화하려면 아래 재설정 버튼을 누르세요.")
 if st.button("🔧 재설정(버튼 다시 활성화)", disabled=not ss.prep_both_done):
-    ss.prep_both_done = False
-    st.rerun()
+    ss.prep_both_done = False; st.rerun()
 
 # ===== 대화 UI (그룹토론) =====
 st.markdown("---")
@@ -388,10 +317,8 @@ st.subheader("💬 그룹토론 — 학생 ↔ 🤖Gemini(친절/꼼꼼) ↔ �
 
 ready_google = "qe_google" in ss
 ready_openai = "qe_openai" in ss
-if ss.session_terminated:
-    st.warning("세션이 종료된 상태입니다. 새로고침으로 다시 시작하세요."); st.stop()
-if not ready_google:
-    st.info("먼저 **[🚀 한 번에 준비하기]**로 두뇌를 준비하세요. (OpenAI 키 없으면 Gemini만 응답)"); st.stop()
+if ss.session_terminated: st.warning("세션이 종료된 상태입니다. 새로고침으로 다시 시작하세요."); st.stop()
+if not ready_google: st.info("먼저 **[🚀 한 번에 준비하기]**로 두뇌를 준비하세요. (OpenAI 키 없으면 Gemini만 응답)"); st.stop()
 
 # 과거 메시지 렌더
 for m in ss.messages:
@@ -417,7 +344,6 @@ def _build_context(messages, limit_pairs=2, max_chars=2000) -> str:
     ctx = "\n\n---\n\n".join(blocks).strip()
     return ctx[-max_chars:] if len(ctx) > max_chars else ctx
 
-# 페르소나
 from src.prompts import EXPLAINER_PROMPT, ANALYST_PROMPT, READER_PROMPT
 def _persona():
     mode = ss.get("mode_select", "💬 이유문법 설명")
@@ -429,7 +355,6 @@ GEMINI_STYLE = "당신은 착하고 똑똑한 친구 같은 교사입니다. 칭
 CHATGPT_STYLE = ("당신은 유머러스하지만 정확한 동료 교사입니다. 동료(Gemini)의 답을 읽고 "
                  "빠진 부분을 보완/교정하고 마지막에 <최종 정리>로 요약하세요. 과한 농담 금지.")
 
-# 모드 스위치
 mode = st.radio("학습 모드", ["💬 이유문법 설명", "🔎 구문 분석", "📚 독해 및 요약"],
                 horizontal=True, key="mode_select")
 
@@ -457,10 +382,10 @@ if user_input:
     ss.messages.append({"role":"user","content":user_input})
     with st.chat_message("user"): st.markdown(user_input)
 
-    # JSONL 사용자 로그
     _jsonl_log([chat_store.make_entry(ss.session_id, "user", "user", user_input, mode, model="user")])
 
     # Gemini 1차
+    from src.rag_engine import get_text_answer, llm_complete
     with st.spinner("🤖 Gemini 선생님이 먼저 답합니다…"):
         prev_ctx = _build_context(ss.messages[:-1], limit_pairs=2, max_chars=2000)
         gemini_query = (f"[이전 대화]\n{prev_ctx}\n\n" if prev_ctx else "") + f"[학생 질문]\n{user_input}"
@@ -474,9 +399,8 @@ if user_input:
         ss.session_id, "assistant", "Gemini", content_g, mode, model=getattr(settings,"LLM_MODEL","gemini")
     )])
 
-    # ChatGPT 보완 (있을 때)
+    # ChatGPT 보완(있을 때)
     if ready_openai:
-        from src.rag_engine import llm_complete
         review_directive = (
             "역할: 동료 AI 영어교사\n"
             "목표: [이전 대화], [학생 질문], [동료의 1차 답변]을 읽고 사실오류/빠진점/모호함을 보완.\n"
