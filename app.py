@@ -10,6 +10,52 @@ import streamlit as st
 # ===== 페이지 설정 (첫 호출만) =====
 st.set_page_config(page_title="나의 AI 영어 교사", layout="wide", initial_sidebar_state="collapsed")
 
+# === 부트 가드 & OAuth 안전 초기화 ===
+import time
+
+ss = st.session_state
+ss.setdefault("_boot_log", [])
+ss.setdefault("_oauth_checked", False)
+
+def _boot(msg):
+    ss["_boot_log"].append(msg)
+
+# 부트 로그는 사이드바에 잠깐 노출(문제 원인 파악용)
+with st.sidebar:
+    st.caption("🛠 Boot log (임시)")
+    log_box = st.empty()
+
+def _flush_boot():
+    try:
+        log_box.write("\n".join(ss["_boot_log"]) or "(empty)")
+    except Exception:
+        pass
+
+_boot("A: page_config set")
+
+# ⚠️ secrets로 OAuth를 잠시 끌 수 있는 스위치(문제시 DISABLE_OAUTH=1 설정)
+OAUTH_DISABLED = str(st.secrets.get("DISABLE_OAUTH", "0")).strip() == "1"
+if OAUTH_DISABLED:
+    _boot("B: OAuth disabled via secrets")
+    _flush_boot()
+else:
+    # finish_oauth_if_redirected() 가 rerun을 야기할 수 있으므로 가드
+    if not ss["_oauth_checked"]:
+        ss["_oauth_checked"] = True
+        _boot("B: calling finish_oauth_if_redirected()...")
+        _flush_boot()
+        try:
+            from src.google_oauth import finish_oauth_if_redirected
+            finish_oauth_if_redirected()   # 내부에서 st.query_params를 건드리면 rerun 가능
+            _boot("C: finish_oauth_if_redirected() returned")
+        except Exception as e:
+            _boot(f"C: OAuth init error → {e!r}")
+        _flush_boot()
+
+_boot("D: first UI can render")
+_flush_boot()
+
+
 # ===== 런타임 안정화 =====
 os.environ["STREAMLIT_SERVER_FILE_WATCHER_TYPE"] = "none"
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
