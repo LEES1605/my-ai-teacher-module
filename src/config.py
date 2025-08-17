@@ -89,10 +89,8 @@ def _coerce_json_str(v: Any) -> str:
     """dict/bytes/base64/str 모두 JSON 문자열로 강제 변환."""
     if v is None:
         return ""
-    # dict로 넣은 경우
     if isinstance(v, (dict, list)):
         return json.dumps(v, ensure_ascii=False)
-    # bytes -> str
     if isinstance(v, (bytes, bytearray)):
         try:
             v = v.decode("utf-8")
@@ -101,9 +99,7 @@ def _coerce_json_str(v: Any) -> str:
     s = str(v).strip()
     if not s:
         return ""
-
-    # base64 가능성
-    # (토큰에 { 나 "type":"service_account" 가 없고, base64처럼 보이면 복호화 시도)
+    # base64처럼 보이면 복호화 시도
     looks_b64 = all(c.isalnum() or c in "+/=\n\r" for c in s) and ("{" not in s and "}" not in s)
     if looks_b64:
         try:
@@ -112,11 +108,53 @@ def _coerce_json_str(v: Any) -> str:
                 return dec
         except Exception:
             pass
-
     return s
 
-# 서비스계정 JSON 여러 키 이름을 모두 지원
+def _normalize_private_key_text(pk_raw: Any) -> str:
+    """엔터/\\n 둘 다 허용. 헤더/푸터 자동 보정."""
+    if pk_raw is None:
+        return ""
+    if isinstance(pk_raw, (bytes, bytearray)):
+        try:
+            pk = pk_raw.decode("utf-8")
+        except Exception:
+            pk = str(pk_raw)
+    else:
+        pk = str(pk_raw)
+    pk = pk.strip()
+    # '\n'을 실제 줄바꿈으로 치환
+    pk = pk.replace("\\r\\n", "\n").replace("\\n", "\n").replace("\r\n", "\n")
+    # 헤더/푸터 보정
+    if "BEGIN PRIVATE KEY" not in pk:
+        pk = "-----BEGIN PRIVATE KEY-----\n" + pk.strip() + "\n-----END PRIVATE KEY-----"
+    return pk
+
+def _build_sa_json_from_fields() -> str:
+    """개별 필드(APP_SA_CLIENT_EMAIL / APP_SA_PRIVATE_KEY 등)로 JSON을 생성."""
+    email = _first_nonempty("APP_SA_CLIENT_EMAIL", "SA_CLIENT_EMAIL")
+    pk = _first_nonempty("APP_SA_PRIVATE_KEY", "SA_PRIVATE_KEY")
+    if not email or not pk:
+        return ""
+    project_id = _first_nonempty("APP_SA_PROJECT_ID", "SA_PROJECT_ID") or ""
+    private_key_id = _first_nonempty("APP_SA_PRIVATE_KEY_ID", "SA_PRIVATE_KEY_ID") or ""
+    client_id = _first_nonempty("APP_SA_CLIENT_ID", "SA_CLIENT_ID") or ""
+    pk_norm = _normalize_private_key_text(pk)
+    data = {
+        "type": "service_account",
+        "project_id": project_id,
+        "private_key_id": private_key_id,
+        "private_key": pk_norm,
+        "client_email": str(email),
+        "client_id": client_id,
+        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+        "token_uri": "https://oauth2.googleapis.com/token",
+        "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+        # client_x509_cert_url은 없어도 인증 동작엔 문제 없음
+    }
+    return json.dumps(data, ensure_ascii=False)
+
 try:
+    # 1) 전체 JSON / Base64
     if not settings.GDRIVE_SERVICE_ACCOUNT_JSON:
         cand = _first_nonempty(
             # 권장
@@ -132,6 +170,13 @@ try:
         if cand:
             settings.GDRIVE_SERVICE_ACCOUNT_JSON = _coerce_json_str(cand)
 
+    # 2) 개별 필드로 JSON 조립 (email + private_key만 있어도 OK)
+    if not settings.GDRIVE_SERVICE_ACCOUNT_JSON:
+        built = _build_sa_json_from_fields()
+        if built:
+            settings.GDRIVE_SERVICE_ACCOUNT_JSON = built
+
+    # 백업/관리 키 폴백
     if not settings.BACKUP_FOLDER_ID:
         cand = _first_nonempty("APP_BACKUP_FOLDER_ID", "BACKUP_FOLDER_ID")
         if cand:
