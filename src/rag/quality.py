@@ -5,6 +5,13 @@ from typing import Any, Dict, List, Tuple
 import streamlit as st
 from src.config import settings, QUALITY_REPORT_PATH
 
+# LlamaIndex 문서 모델
+try:
+    # 0.12.x
+    from llama_index.core.schema import Document
+except Exception:  # 안전 폴백
+    from llama_index.core import Document  # type: ignore
+
 _ws_re = re.compile(r"[ \t\f\v]+")
 
 def _clean_text(s: str) -> str:
@@ -33,7 +40,8 @@ def maybe_summarize_docs(docs: List[Any]) -> None:
     try:
         from llama_index.core import Settings
         for d in docs:
-            if "doc_summary" in getattr(d, "metadata", {}):
+            md = getattr(d, "metadata", {}) or {}
+            if "doc_summary" in md:
                 continue
             text = (getattr(d, "text", "") or "")[:4000]
             if not text:
@@ -46,18 +54,32 @@ def maybe_summarize_docs(docs: List[Any]) -> None:
             try:
                 resp = Settings.llm.complete(prompt)
                 summary = getattr(resp, "text", None) or str(resp)
-                d.metadata["doc_summary"] = summary.strip()
+                md["doc_summary"] = summary.strip()
+                # 새 Document로 복제해서 metadata를 반영
+                d_idx = docs.index(d)
+                docs[d_idx] = Document(text=getattr(d, "text", ""), metadata=md)
             except Exception:
                 pass
     except Exception:
         pass
+
+def _clone_with_text_and_meta(d: Any, new_text: str, new_meta: Dict[str, Any]) -> Document:
+    """원본 d에서 텍스트/메타를 반영한 새 Document 생성(직접 대입 금지)."""
+    try:
+        # 파일명/기타 메타를 최대한 보존
+        md = dict(getattr(d, "metadata", {}) or {})
+        md.update(new_meta)
+    except Exception:
+        md = dict(new_meta)
+    return Document(text=new_text, metadata=md)
 
 def preprocess_docs(docs: List[Any], seen_hashes: set, min_chars: int, dedup: bool) -> Tuple[List[Any], Dict[str, Any]]:
     """텍스트 정리/저품질 필터/중복제거 후 유효 문서만 반환 + 통계."""
     kept: List[Any] = []
     stats = {"input_docs": len(docs), "kept": 0, "skipped_low_text": 0, "skipped_dup": 0, "total_chars": 0}
     for d in docs:
-        t = _clean_text(getattr(d, "text", "") or "")
+        raw = getattr(d, "text", "") or ""
+        t = _clean_text(raw)
         if len(t) < min_chars:
             stats["skipped_low_text"] += 1
             continue
@@ -65,10 +87,12 @@ def preprocess_docs(docs: List[Any], seen_hashes: set, min_chars: int, dedup: bo
         if dedup and h in seen_hashes:
             stats["skipped_dup"] += 1
             continue
-        d.text = t
-        d.metadata = dict(getattr(d, "metadata", {}) or {})
-        d.metadata["text_hash"] = h
-        kept.append(d)
+
+        md = dict(getattr(d, "metadata", {}) or {})
+        md["text_hash"] = h
+
+        nd = _clone_with_text_and_meta(d, t, md)
+        kept.append(nd)
         seen_hashes.add(h)
         stats["kept"] += 1
         stats["total_chars"] += len(t)
