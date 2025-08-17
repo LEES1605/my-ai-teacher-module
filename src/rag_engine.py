@@ -1,17 +1,26 @@
-# src/rag_engine.py — 스텝 인덱싱 + Resume/Cancel + chat_log 제외 + 삽입호환
+# src/rag_engine.py — 증분 인덱싱(스텝) + 재개/취소 + 진행조회
+#  - Drive 매니페스트 비교로 변경 감지
+#  - chat_log 폴더 제외
+#  - 인덱스 영구 저장/로드, 체크포인트
+#  - LlamaIndex 버전차 호환 insert(문서/노드) 처리
 from __future__ import annotations
-import os, json, time
-from typing import Callable, Any, Mapping, Iterable, Tuple, Optional
+
+import os
+import json
+from typing import Any, Callable, Iterable, Mapping, Optional
 
 import streamlit as st
 from src.config import settings
 
 # ================================ 예외 ================================
 class CancelledError(Exception):
+    """사용자 취소를 나타내는 예외"""
     pass
+
 
 # ============================ 임베딩/LLM =============================
 def set_embed_provider(provider: str, api_key: str, model: str) -> None:
+    """llama_index Settings.embed_model 설정"""
     from llama_index.core import Settings
     if provider == "google":
         from llama_index.embeddings.google_genai import GoogleGenAIEmbedding
@@ -22,7 +31,9 @@ def set_embed_provider(provider: str, api_key: str, model: str) -> None:
     else:
         raise ValueError(f"Unknown embed provider: {provider}")
 
+
 def make_llm(provider: str, api_key: str, model: str, temperature: float = 0.0):
+    """llama_index LLM 생성 (Google / OpenAI)"""
     if provider == "google":
         from llama_index.llms.google_genai import GoogleGenAI
         return GoogleGenAI(api_key=api_key, model=model, temperature=temperature)
@@ -32,24 +43,25 @@ def make_llm(provider: str, api_key: str, model: str, temperature: float = 0.0):
     else:
         raise ValueError(f"Unknown llm provider: {provider}")
 
-# LLM 무검색(직접 완성)
-def llm_complete(llm, prompt: str, temperature: float = 0.0) -> str:
+
+def llm_complete(llm, prompt: str) -> str:
+    """검색 없이 LLM 단독으로 완성"""
     try:
         resp = llm.complete(prompt)
         return getattr(resp, "text", str(resp))
     except AttributeError:
+        # 일부 드라이버는 .predict만 제공
         return llm.predict(prompt)
+
 
 # ============================ Drive 유틸 =============================
 def _normalize_sa(raw: Any) -> Mapping[str, Any]:
     if isinstance(raw, str):
-        try:
-            return json.loads(raw)
-        except Exception:
-            return {}
+        return json.loads(raw)
     elif isinstance(raw, Mapping):
         return raw
     return {}
+
 
 def _build_drive_service(creds_dict):
     from google.oauth2 import service_account
@@ -58,14 +70,18 @@ def _build_drive_service(creds_dict):
     creds = service_account.Credentials.from_service_account_info(creds_dict, scopes=scopes)
     return build("drive", "v3", credentials=creds, cache_discovery=False)
 
+
 def _fetch_drive_manifest(
     creds_dict,
     root_folder_id: str,
     exclude_folder_names: Iterable[str] | None = None,
 ) -> dict:
-    """공유드라이브 포함 재귀 스냅샷. exclude_folder_names는 재귀 진입 제외(예: chat_log)."""
+    """
+    지정 폴더 이하 전체 파일 스냅샷(공유드라이브 포함).
+    exclude_folder_names에 포함된 이름의 폴더는 *재귀 진입 제외* (예: chat_log).
+    """
     svc = _build_drive_service(creds_dict)
-    exclude_l = set([x.strip().lower() for x in (exclude_folder_names or [])])
+    exclude_l = set(x.strip().lower() for x in (exclude_folder_names or []))
 
     def list_children(folder_id: str):
         files, folders, page_token = [], [], None
@@ -97,6 +113,7 @@ def _fetch_drive_manifest(
         seen.add(fid)
 
         files, folders = list_children(fid)
+        # 제외 폴더는 재귀 진입하지 않음
         allowed = []
         for f in folders:
             if f.get("name", "").strip().lower() in exclude_l:
@@ -111,6 +128,7 @@ def _fetch_drive_manifest(
         f.setdefault("md5Checksum", "")
     return {"root": root_folder_id, "files": all_files, "count": len(all_files)}
 
+
 def _load_local_manifest(path: str) -> dict:
     try:
         with open(path, "r", encoding="utf-8") as f:
@@ -118,32 +136,44 @@ def _load_local_manifest(path: str) -> dict:
     except Exception:
         return {"files": []}
 
+
 def _save_local_manifest(path: str, manifest: dict) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(manifest, f, ensure_ascii=False, indent=2)
 
+
 def _manifests_differ(local: dict, remote: dict) -> bool:
     def sig(d: dict) -> tuple:
-        return (d.get("id",""), d.get("modifiedTime",""), d.get("size",""), d.get("md5Checksum",""))
-    ls = sorted([sig(x) for x in local.get("files", [])])
-    rs = sorted([sig(x) for x in remote.get("files", [])])
+        return (
+            d.get("id", ""),
+            d.get("modifiedTime", ""),
+            d.get("size", ""),
+            d.get("md5Checksum", ""),
+        )
+    ls = sorted(sig(x) for x in local.get("files", []))
+    rs = sorted(sig(x) for x in remote.get("files", []))
     return ls != rs
+
 
 # ============================ 인덱스 I/O =============================
 def _load_index_from_disk(persist_dir: str):
     from llama_index.core import StorageContext, load_index_from_storage
     return load_index_from_storage(StorageContext.from_defaults(persist_dir=persist_dir))
 
+
 def _persist_index(index, persist_dir: str) -> None:
     os.makedirs(persist_dir, exist_ok=True)
     index.storage_context.persist(persist_dir=persist_dir)
 
+
 def _ckpt_path(persist_dir: str) -> str:
     return os.path.join(persist_dir, "_ingest_progress.json")
 
+
 def _sig_path(persist_dir: str) -> str:
     return os.path.join(persist_dir, "_index_signature.json")
+
 
 def _load_ckpt(persist_dir: str) -> dict:
     try:
@@ -152,16 +182,19 @@ def _load_ckpt(persist_dir: str) -> dict:
     except Exception:
         return {"done_ids": []}
 
+
 def _save_ckpt(persist_dir: str, data: dict) -> None:
     os.makedirs(persist_dir, exist_ok=True)
     with open(_ckpt_path(persist_dir), "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+
 
 def _clear_ckpt(persist_dir: str) -> None:
     try:
         os.remove(_ckpt_path(persist_dir))
     except Exception:
         pass
+
 
 def _load_signature(persist_dir: str) -> dict:
     try:
@@ -170,55 +203,91 @@ def _load_signature(persist_dir: str) -> dict:
     except Exception:
         return {}
 
+
 def _save_signature(persist_dir: str, sig: dict) -> None:
     os.makedirs(persist_dir, exist_ok=True)
     with open(_sig_path(persist_dir), "w", encoding="utf-8") as f:
         json.dump(sig, f, ensure_ascii=False, indent=2)
 
-# ---- LlamaIndex 0.12 호환 삽입 ----
+
 def _insert_docs(index, docs):
-    """insert / insert_nodes 중 가능한 메서드로 삽입. 비어있는 문서 스킵."""
-    if not docs:
-        return
-    cleaned = []
-    for d in docs:
-        try:
-            txt = getattr(d, "text", None)
-            if txt is None and hasattr(d, "get_text"):
-                txt = d.get_text()
-            if txt is None:
-                txt = ""
-            if str(txt).strip():
-                cleaned.append(d)
-        except Exception:
-            pass
-    if not cleaned:
-        return
+    """
+    LlamaIndex 버전마다 API가 다른 문제를 흡수:
+      - insert_documents(docs)
+      - insert_nodes(nodes)
+      - insert(docs_or_nodes)
+    """
+    # 1) try: insert_documents
+    try:
+        return index.insert_documents(docs)
+    except Exception:
+        pass
+    # 2) try: insert_nodes
+    try:
+        return index.insert_nodes(docs)
+    except Exception:
+        pass
+    # 3) fallback: insert
+    try:
+        return index.insert(docs)
+    except Exception as e:
+        raise e
 
-    if hasattr(index, "insert"):
-        index.insert(cleaned)
-        return
 
-    if hasattr(index, "insert_nodes"):
-        try:
-            from llama_index.core.node_parser import SimpleNodeParser
-            nodes = SimpleNodeParser.from_defaults().get_nodes_from_documents(cleaned)
-            index.insert_nodes(nodes)
+# ============================ Step Job 객체 ============================
+class _StepJob:
+    """세션에 그대로 담아두는 간단한 잡 상태 객체(직렬화 불요)"""
+    def __init__(
+        self,
+        gcp_creds: Mapping[str, Any],
+        gdrive_folder_id: str,
+        persist_dir: str,
+        manifest_path: str,
+        exclude_folders: Iterable[str],
+        to_process: list[dict],
+        already_done: set[str],
+        total: int,
+        max_docs: Optional[int],
+    ):
+        self.gcp_creds = gcp_creds
+        self.gdrive_folder_id = gdrive_folder_id
+        self.persist_dir = persist_dir
+        self.manifest_path = manifest_path
+        self.exclude_folders = list(exclude_folders)
+        self.pending = to_process  # list of manifest file dicts
+        self.done_ids = set(already_done)
+        self.total = int(total)
+        self.max_docs = max_docs
+        self.cancel = False   # 외부 취소 플래그
+
+        # 런타임 자원
+        self.reader = None
+        self.index = None
+        self._prepared = False
+
+        # 리포트
+        self.skipped: list[dict] = []
+
+    # 내부 준비(기존 인덱스 로드/빈 인덱스 생성 + Reader 준비)
+    def _prepare(self):
+        if self._prepared:
             return
+        from llama_index.core import VectorStoreIndex
+        from llama_index.readers.google import GoogleDriveReader
+
+        # 기존 인덱스를 불러오거나 빈 인덱스 생성
+        try:
+            self.index = _load_index_from_disk(self.persist_dir)
         except Exception:
-            pass
+            self.index = VectorStoreIndex.from_documents([])
+            _persist_index(self.index, self.persist_dir)
 
-    raise RuntimeError("Index has no supported insert method (insert / insert_nodes).")
+        # Reader 준비
+        self.reader = GoogleDriveReader(service_account_key=self.gcp_creds, recursive=False)
+        self._prepared = True
 
-# ====================== 진행도 계산(스텝 빌더 공용) ======================
-def _progress_pct(persist_dir: str, total: int) -> int:
-    if total <= 0:
-        return 100
-    done = len(_load_ckpt(persist_dir).get("done_ids", []))
-    base = 8  # 매니페스트 이후 시작지점
-    return base + int(80 * min(done, total) / max(total, 1))
 
-# ======================== 스텝 빌더 (시작/재개/취소) =====================
+# ===================== 인덱싱 엔트리(스텝 시작/재개/취소) =====================
 def start_index_builder(
     update_pct: Callable[[int, Optional[str]], None],
     update_msg: Callable[[str], None],
@@ -229,225 +298,238 @@ def start_index_builder(
     max_docs: int | None = None,
     is_cancelled: Callable[[], bool] | None = None,
 ) -> dict:
-    """스텝 빌더 시작. 필요 없으면 즉시 done + index 반환."""
-    gcp = _normalize_sa(raw_sa)
+    """
+    변경이 없으면 즉시 저장된 인덱스를 로드하여 반환.
+    변경이 있으면 StepJob을 만들어 'running' 상태를 반환.
+    """
+    gcp_creds = _normalize_sa(raw_sa)
 
-    # 현재 임베딩 서명
+    # 현재 임베딩 서명(공급자/모델)
     from llama_index.core import Settings
+    embed = getattr(Settings, "embed_model", None)
     cur_sig = {
-        "embed_provider": ("openai" if "openai" in str(type(getattr(Settings, "embed_model", None))).lower() else "google"),
-        "embed_model": getattr(Settings.embed_model, "model", getattr(Settings.embed_model, "_model_name", "")),
+        "embed_provider": (
+            "openai" if "openai" in str(type(embed)).lower()
+            else ("google" if "google" in str(type(embed)).lower() else "unknown")
+        ),
+        "embed_model": getattr(embed, "model", getattr(embed, "_model_name", "")),
     }
     old_sig = _load_signature(persist_dir)
 
-    update_pct(5, "드라이브 변경 확인 중…")
-    remote = _fetch_drive_manifest(gcp, gdrive_folder_id, exclude_folder_names=["chat_log"])
+    # 드라이브 매니페스트 (chat_log 제외)
+    update_pct(4, "드라이브 변경 확인 중…")
+    remote = _fetch_drive_manifest(gcp_creds, gdrive_folder_id, exclude_folder_names=["chat_log"])
+    local = _load_local_manifest(manifest_path)
+
+    need_rebuild = False
+    if old_sig != cur_sig:
+        need_rebuild = True
+        update_msg("임베딩 설정이 변경되어 재인덱싱합니다.")
+    elif _manifests_differ(local, remote):
+        need_rebuild = True
+
+    # 변경 없음 → 저장본 로드
+    if os.path.exists(persist_dir) and not need_rebuild:
+        try:
+            update_pct(25, "변경 없음 → 저장된 두뇌 로딩")
+            idx = _load_index_from_disk(persist_dir)
+            update_pct(100, "완료!")
+            st.session_state.setdefault("indexing_report", {
+                "total_manifest": len(remote.get("files", [])),
+                "loaded_docs": -1, "skipped_count": 0, "skipped": []
+            })
+            return {"status": "done", "index": idx}
+        except Exception as e:
+            update_msg(f"저장된 인덱스 로드 실패: {e} → 재인덱싱 시도")
+            # 계속 진행해 StepJob 생성
+
+    # 증분 빌드를 위한 StepJob 준비
     files_all = remote.get("files", [])
     if max_docs:
-        files_all = files_all[:max_docs]
+        files_all = files_all[: int(max_docs)]
 
-    local = _load_local_manifest(manifest_path)
-    need_rebuild = (old_sig != cur_sig) or _manifests_differ(local, {"files": files_all})
+    ckpt = _load_ckpt(persist_dir)
+    done_ids: set[str] = set(ckpt.get("done_ids", []))
+    pending = [f for f in files_all if f["id"] not in done_ids]
 
-    if os.path.exists(persist_dir) and not need_rebuild:
-        # 변경 없음 → 저장본 로드
-        update_pct(25, "변경 없음 → 저장된 두뇌 로딩")
-        idx = _load_index_from_disk(persist_dir)
-        update_pct(100, "완료!")
-        st.session_state.setdefault("indexing_report", {
-            "total_manifest": len(files_all),
-            "loaded_docs": -1, "skipped_count": 0, "skipped": []
-        })
-        return {"status": "done", "index": idx}
+    job = _StepJob(
+        gcp_creds=gcp_creds,
+        gdrive_folder_id=gdrive_folder_id,
+        persist_dir=persist_dir,
+        manifest_path=manifest_path,
+        exclude_folders=["chat_log"],
+        to_process=pending,
+        already_done=done_ids,
+        total=len(files_all),
+        max_docs=max_docs,
+    )
+    # 초반 진행률
+    pct = 8 if pending else 92
+    return {"status": "running", "job": job, "pct": pct, "msg": "인덱싱 시작"}
 
-    # 재빌드 필요 → 체크포인트 초기화 보장(없으면 생성)
-    if not os.path.exists(persist_dir):
-        os.makedirs(persist_dir, exist_ok=True)
-    ck = _load_ckpt(persist_dir)
-    if "done_ids" not in ck:
-        _save_ckpt(persist_dir, {"done_ids": []})
-
-    # 빈 인덱스 보장
-    try:
-        _load_index_from_disk(persist_dir)
-        update_msg("이전 진행분을 불러왔습니다(Resume).")
-    except Exception:
-        from llama_index.core import VectorStoreIndex
-        idx = VectorStoreIndex.from_documents([])
-        _persist_index(idx, persist_dir)
-
-    # 아직 진행 중
-    return {
-        "status": "running",
-        "job": {
-            "gdrive_folder_id": gdrive_folder_id,
-            "persist_dir": persist_dir,
-            "manifest_path": manifest_path,
-            "max_docs": max_docs,
-            "gcp": gcp,
-        },
-        "total": len(files_all),
-        "pct": _progress_pct(persist_dir, len(files_all)),
-        "msg": "인덱싱 준비 중…",
-    }
 
 def resume_index_builder(
-    job: dict,
+    job: _StepJob,
     update_pct: Callable[[int, Optional[str]], None],
     update_msg: Callable[[str], None],
     is_cancelled: Callable[[], bool] | None = None,
-    batch_size: int = 6,
+    batch_size: int = 8,
 ) -> dict:
-    """한 스텝만 진행. done이면 index 반환."""
-    gcp = job["gcp"]
-    gdrive_folder_id = job["gdrive_folder_id"]
-    persist_dir = job["persist_dir"]
-    manifest_path = job["manifest_path"]
-    max_docs = job.get("max_docs")
+    """
+    pending 목록을 batch_size만큼 처리하고 진행률/메시지 반환.
+    모든 처리가 끝나면 인덱스를 저장하고 'done' 반환.
+    """
+    from math import floor
 
-    if is_cancelled and is_cancelled():
-        return {"status": "cancelled", "msg": "사용자 취소"}
+    job._prepare()
 
-    # 매니페스트/대상 파일
-    remote = _fetch_drive_manifest(gcp, gdrive_folder_id, exclude_folder_names=["chat_log"])
-    files_all = remote.get("files", [])
-    if max_docs:
-        files_all = files_all[:max_docs]
-    total = len(files_all)
-
-    # 진행상태
-    ck = _load_ckpt(persist_dir)
-    done_ids: set[str] = set(ck.get("done_ids", []))
-    pending = [f for f in files_all if f["id"] not in done_ids]
-
-    # 모두 끝난 경우 → 마무리
-    if not pending:
-        try:
-            index = _load_index_from_disk(persist_dir)
-        except Exception:
-            from llama_index.core import VectorStoreIndex
-            index = VectorStoreIndex.from_documents([])
-            _persist_index(index, persist_dir)
-
-        update_pct(92, "인덱스 저장 중…")
-        _persist_index(index, persist_dir)
-
-        # 서명/매니페스트 저장
-        from llama_index.core import Settings
-        cur_sig = {
-            "embed_provider": ("openai" if "openai" in str(type(getattr(Settings, "embed_model", None))).lower() else "google"),
-            "embed_model": getattr(Settings.embed_model, "model", getattr(Settings.embed_model, "_model_name", "")),
+    if job.total == 0:
+        update_pct(100, "폴더에 학습할 파일이 없습니다.")
+        st.session_state["indexing_report"] = {
+            "total_manifest": 0, "loaded_docs": 0, "skipped_count": 0, "skipped": []
         }
-        _save_signature(persist_dir, cur_sig)
-        _save_local_manifest(manifest_path, {"files": files_all})
+        return {"status": "done", "index": job.index}
 
-        _clear_ckpt(persist_dir)
-        update_pct(100, "완료")
-        return {"status": "done", "index": index}
+    B = max(1, int(batch_size))
+    processed_now = 0
 
-    # 이번 스텝에서 처리할 파일들
-    step_files = pending[:batch_size]
+    while processed_now < B and job.pending:
+        if job.cancel or (is_cancelled and is_cancelled()):
+            return {"status": "cancelled"}
 
-    from llama_index.readers.google import GoogleDriveReader
-    reader = GoogleDriveReader(service_account_key=gcp, recursive=False)
-
-    # 인덱스 로드
-    try:
-        index = _load_index_from_disk(persist_dir)
-    except Exception:
-        from llama_index.core import VectorStoreIndex
-        index = VectorStoreIndex.from_documents([])
-        _persist_index(index, persist_dir)
-
-    batch, skipped = [], []
-    for f in step_files:
-        if is_cancelled and is_cancelled():
-            return {"status": "cancelled", "msg": "사용자 취소"}
-
+        f = job.pending.pop(0)
         fid, name, mime = f["id"], f.get("name", ""), f.get("mimeType", "")
         try:
-            docs = reader.load_data(file_ids=[fid])
+            docs = job.reader.load_data(file_ids=[fid])
+            # 파일명 메타 보강
             for d in docs:
                 try:
                     d.metadata["file_name"] = name
                 except Exception:
                     pass
-            batch.extend(docs)
-            done_ids.add(fid)
-            _save_ckpt(persist_dir, {"done_ids": list(done_ids)})
 
-            pct = _progress_pct(persist_dir, total)
-            update_pct(pct, f"로딩 {len(done_ids)}/{total} — {name}")
+            # 삽입
+            _insert_docs(job.index, docs)
+
+            # 주기적 퍼시스트(작게라도 안전)
+            if (len(job.done_ids) + processed_now) % 8 == 0:
+                _persist_index(job.index, job.persist_dir)
+
+            job.done_ids.add(fid)
+            _save_ckpt(job.persist_dir, {"done_ids": list(job.done_ids)})
+
+            processed_now += 1
+            processed = len(job.done_ids)
+            pct = 8 + int(80 * processed / max(job.total, 1))  # 8% → 88%
+            update_pct(pct, f"로딩 {processed}/{job.total} — {name}")
         except Exception as e:
-            skipped.append({"name": name, "mime": mime, "reason": str(e)})
-            update_msg(f"⚠️ 스킵: {name} ({mime}) — {e}")
+            msg = f"{name} ({mime}) — {type(e).__name__}: {e}"
+            job.skipped.append({"name": name, "mime": mime, "reason": str(e)})
+            update_msg("⚠️ 스킵: " + msg)
 
-    if batch:
-        try:
-            _insert_docs(index, batch)
-            _persist_index(index, persist_dir)
-        except Exception as e:
-            update_msg(f"⚠️ 인덱스 삽입 오류: {e}")
+    # 아직 남아있으면 running
+    if job.pending:
+        processed = len(job.done_ids)
+        pct = 8 + int(80 * processed / max(job.total, 1))
+        return {"status": "running", "pct": pct, "msg": "진행 중…"}
 
-    # 보고서 누적 저장(세션에)
-    rep = st.session_state.get("indexing_report", {"total_manifest": total, "loaded_docs": 0, "skipped_count": 0, "skipped": []})
-    rep["total_manifest"] = total
-    rep["loaded_docs"] = len(done_ids)
-    rep["skipped"].extend(skipped)
-    rep["skipped_count"] = len(rep["skipped"])
-    st.session_state["indexing_report"] = rep
+    # 모두 처리됨 → 저장/정리
+    update_pct(92, "인덱스 저장 중…")
+    _persist_index(job.index, job.persist_dir)
+    _clear_ckpt(job.persist_dir)
+    update_pct(100, "완료")
 
-    return {"status": "running", "pct": _progress_pct(persist_dir, total), "msg": "진행 중…"}
+    # 매니페스트/시그니처 저장
+    remote = _fetch_drive_manifest(job.gcp_creds, job.gdrive_folder_id, exclude_folder_names=job.exclude_folders)
+    _save_local_manifest(job.manifest_path, remote)
 
-def cancel_index_builder(job: dict) -> None:
-    """단순히 체크포인트만 제거하면 다음 시작 시 처음부터 혹은 Resume가 깔끔해집니다."""
-    persist_dir = job["persist_dir"]
-    _clear_ckpt(persist_dir)
+    from llama_index.core import Settings
+    embed = getattr(Settings, "embed_model", None)
+    sig = {
+        "embed_provider": (
+            "openai" if "openai" in str(type(embed)).lower()
+            else ("google" if "google" in str(type(embed)).lower() else "unknown")
+        ),
+        "embed_model": getattr(embed, "model", getattr(embed, "_model_name", "")),
+    }
+    _save_signature(job.persist_dir, sig)
 
-def get_index_progress(job: dict) -> Tuple[int, str]:
-    """현재 진행률(%)과 간단 메시지."""
-    gcp = job["gcp"]
-    remote = _fetch_drive_manifest(gcp, job["gdrive_folder_id"], exclude_folder_names=["chat_log"])
-    files = remote.get("files", [])
-    if job.get("max_docs"):
-        files = files[: job["max_docs"]]
-    pct = _progress_pct(job["persist_dir"], len(files))
-    return pct, f"{pct}%"
+    st.session_state["indexing_report"] = {
+        "total_manifest": job.total,
+        "loaded_docs": len(job.done_ids),
+        "skipped_count": len(job.skipped),
+        "skipped": job.skipped,
+    }
+    return {"status": "done", "index": job.index}
+
+
+def cancel_index_builder(job: Optional[_StepJob]) -> None:
+    """외부 취소 플래그 설정(다음 스텝 호출 시 취소)"""
+    if job is not None:
+        job.cancel = True
+
+
+def get_index_progress(job: Optional[_StepJob]) -> dict:
+    """현재 잡의 진행 상황 요약(간단 조회용)"""
+    if job is None:
+        return {"running": False}
+    return {
+        "running": True,
+        "total": job.total,
+        "done": len(job.done_ids),
+        "pending": len(job.pending),
+        "skipped_count": len(job.skipped),
+    }
+
 
 # ============================ QA 유틸 =============================
 def get_text_answer(query_engine, question: str, system_prompt: str) -> str:
+    """
+    업로드 자료를 최우선으로 참고하여 답변하고,
+    출처(파일명)를 하단에 표시한다.
+    """
     try:
         full_query = (
             f"{system_prompt}\n\n"
-            "[지시사항] 반드시 업로드된 강의 자료를 최우선으로 참고하여 답변하고, "
+            "[지시사항] 반드시 업로드된 강의/학습 자료를 최우선으로 참고하여 답변하고, "
             "근거를 찾을 수 없다면 그 사실을 명확히 밝혀라.\n\n"
             f"[학생의 질문]\n{question}"
         )
         response = query_engine.query(full_query)
         answer_text = str(response)
+
         try:
-            files = [n.metadata.get('file_name', '알 수 없음') for n in getattr(response, "source_nodes", [])]
-            source_files = ", ".join(sorted(list(set(files)))) if files else "출처 정보 없음"
+            files = [n.metadata.get("file_name", "알 수 없음") for n in getattr(response, "source_nodes", [])]
+            source_files = ", ".join(sorted(set(files))) if files else "출처 정보 없음"
         except Exception:
             source_files = "출처 정보 없음"
+
         return f"{answer_text}\n\n---\n*참고 자료: {source_files}*"
     except Exception as e:
-        return f"텍스트 답변 생성 중 오류 발생: {e}"
+        return f"텍스트 답변 생성 중 오류 발생: {type(e).__name__}: {e}"
+
 
 # ============================ 테스트 유틸 ============================
 def smoke_test_drive() -> tuple[bool, str]:
+    """서비스계정으로 Drive 폴더에 접근 가능한지 간단 확인"""
     try:
         sa = _normalize_sa(settings.GDRIVE_SERVICE_ACCOUNT_JSON)
         svc = _build_drive_service(sa)
         fid = settings.GDRIVE_FOLDER_ID
-        meta = svc.files().get(fileId=fid, fields="id,name,driveId,parents", supportsAllDrives=True).execute()
+        meta = svc.files().get(
+            fileId=fid,
+            fields="id,name,driveId,parents",
+            supportsAllDrives=True
+        ).execute()
         name = meta.get("name", "")
         drive_id = meta.get("driveId", "")
         return True, f"✅ Drive 연결 OK · 폴더명: {name} · driveId: {drive_id or 'MyDrive'}"
     except Exception as e:
         return False, f"Drive 연결/권한 확인 실패: {e}"
 
+
 def preview_drive_files(max_items: int = 10) -> tuple[bool, str, list[dict]]:
+    """최신 수정 순으로 상위 N개 파일 미리보기"""
     try:
         sa = _normalize_sa(settings.GDRIVE_SERVICE_ACCOUNT_JSON)
         manifest = _fetch_drive_manifest(sa, settings.GDRIVE_FOLDER_ID, exclude_folder_names=["chat_log"])
