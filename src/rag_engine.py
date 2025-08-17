@@ -232,6 +232,23 @@ def clear_checkpoint(path: str = CHECKPOINT_PATH) -> None:
     except Exception:
         pass
 
+# ====== 저장본 존재 체크 & 안전한 StorageContext 생성 =========================
+def _has_persisted_index(persist_dir: str) -> bool:
+    """LlamaIndex 저장본의 핵심 파일이 하나라도 있으면 True."""
+    names = ("docstore.json", "index_store.json", "vector_store.json")
+    return any(os.path.exists(os.path.join(persist_dir, n)) for n in names)
+
+def _make_storage_context(persist_dir: str):
+    """저장본이 있으면 로드, 없으면 빈 컨텍스트로 시작(초기 인덱싱에서 FileNotFound 방지)."""
+    from llama_index.core import StorageContext
+    try:
+        if _has_persisted_index(persist_dir):
+            return StorageContext.from_defaults(persist_dir=persist_dir)
+    except Exception:
+        # 파손/부분 저장본일 수 있음 → 깨끗한 컨텍스트로 시작
+        pass
+    return StorageContext.from_defaults()
+
 # ====== 인덱스 생성(체크포인트 지원) ==========================================
 def _build_index_with_checkpoint(update_pct: Callable[[int, str | None], None],
                                  update_msg: Callable[[str], None],
@@ -243,7 +260,7 @@ def _build_index_with_checkpoint(update_pct: Callable[[int, str | None], None],
     Google Drive 파일을 '파일ID 단위'로 처리 → 각 파일 완주 후 저장 & 체크포인트 기록.
     재실행 시 이미 완료한 파일(ID+md5 동일)은 건너뜀.
     """
-    from llama_index.core import VectorStoreIndex, StorageContext, load_index_from_storage
+    from llama_index.core import VectorStoreIndex, load_index_from_storage
     from llama_index.readers.google import GoogleDriveReader
 
     # 준비
@@ -256,7 +273,6 @@ def _build_index_with_checkpoint(update_pct: Callable[[int, str | None], None],
     for fid, meta in remote_manifest.items():
         done = cp.get(fid)
         if done and done.get("md5") and meta.get("md5") and done["md5"] == meta["md5"]:
-            # 동일 md5 → 이미 처리됨
             continue
         todo_ids.append(fid)
 
@@ -265,20 +281,25 @@ def _build_index_with_checkpoint(update_pct: Callable[[int, str | None], None],
     done_cnt = total - pending
     update_pct(30, f"문서 목록 불러오는 중 • 전체 {total}개, 이번에 처리 {pending}개")
 
-    # 스토리지 컨텍스트(기존 저장본 있으면 이어쓰기)
+    # 스토리지 컨텍스트(있으면 이어쓰기, 없으면 새로 시작)
     os.makedirs(persist_dir, exist_ok=True)
-    storage_context = StorageContext.from_defaults(persist_dir=persist_dir)
+    storage_context = _make_storage_context(persist_dir)
 
     # 기존 저장본을 우선 로딩(있다면)
     try:
         _ = load_index_from_storage(storage_context)
     except Exception:
-        pass  # 처음 생성일 수 있음
+        pass  # 처음 생성일 수 있음/부분 저장본일 수 있음 → 무시하고 이어쓰기
 
     if pending == 0:
         update_pct(95, "변경 없음 → 저장본 그대로 사용")
-        # 기존 저장본만 반환
-        return load_index_from_storage(storage_context)
+        # 기존 저장본 반환(없더라도 위에서 예외 처리)
+        try:
+            return load_index_from_storage(storage_context)
+        except Exception:
+            # 저장본이 아예 없으면 빈 상태이므로, 그대로 진행하지 말고 에러 안내
+            st.error("저장된 두뇌가 없는데 변경도 없다고 감지되었습니다. 초기화 후 다시 시도하세요.")
+            st.stop()
 
     # 파일 단위로 이어서 인덱싱
     for i, fid in enumerate(todo_ids, start=1):
@@ -287,20 +308,15 @@ def _build_index_with_checkpoint(update_pct: Callable[[int, str | None], None],
         update_msg(f"인덱스 생성 • {pretty_name} ({done_cnt + i}/{total})")
 
         try:
-            # 파일 1개만 로드
-            docs = loader.load_data(file_ids=[fid])
+            docs = loader.load_data(file_ids=[fid])  # 파일 1개만 로드
         except TypeError:
-            # 만약 버전 이슈로 file_ids가 없다면, 폴더 전체를 한 번에 로드하도록 안내
             st.error("GoogleDriveReader 버전이 오래되어 file_ids 옵션을 지원하지 않습니다. requirements 업데이트가 필요합니다.")
             st.stop()
 
-        # 해당 문서만 추가 인덱싱(이어쓰기)
         try:
             VectorStoreIndex.from_documents(docs, storage_context=storage_context, show_progress=False)
-            # 즉시 저장(부분 진행 보존)
-            storage_context.persist(persist_dir=persist_dir)
-            # 체크포인트 갱신
-            _mark_done(cp, fid, meta)
+            storage_context.persist(persist_dir=persist_dir)  # 부분 진행 즉시 저장
+            _mark_done(cp, fid, meta)  # 체크포인트 갱신
         except Exception as e:
             st.error(f"인덱스 생성 중 오류: {pretty_name}")
             with st.expander("자세한 오류 보기"):
@@ -320,11 +336,10 @@ def _build_index_with_checkpoint(update_pct: Callable[[int, str | None], None],
         st.stop()
 
     update_pct(100, "완료")
-    # 최종 인덱스 반환
     from llama_index.core import load_index_from_storage
     return load_index_from_storage(storage_context)
 
-# (참고) 기존 일괄 빌드 함수는 남겨둠(미사용 시 제거 가능)
+# (참고) 기존 일괄 빌드 함수(미사용)
 def _build_index_with_progress(update_pct: Callable[[int, str | None], None],
                                update_msg: Callable[[str], None],
                                gdrive_folder_id: str,
@@ -405,8 +420,7 @@ def get_or_build_index(update_pct: Callable[[int, str | None], None],
     os.makedirs(os.path.dirname(manifest_path), exist_ok=True)
     with open(manifest_path, "w", encoding="utf-8") as fp:
         json.dump(remote, fp, ensure_ascii=False, indent=2, sort_keys=True)
-    # 모든 파일 완료했으니 체크포인트 비우기
-    clear_checkpoint()
+    clear_checkpoint()  # 모든 파일 완료했으니 체크포인트 비움
 
     update_pct(100, "완료!")
     return idx
