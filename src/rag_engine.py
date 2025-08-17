@@ -257,13 +257,8 @@ def _clean_text(s: str) -> str:
 def _sha1(s: str) -> str:
     return hashlib.sha1(s.encode("utf-8", errors="ignore")).hexdigest()
 
-def _approx_tokens(chars: int) -> int:
-    # 대략적 추정(영/한 혼재 고려해 완충값)
-    return max(1, int(chars / 3.5))
-
 def _get_opt() -> Dict[str, Any]:
-    # 세션에서 오버라이드 가능(없으면 settings)
-    g = {
+    return {
         "chunk_size": int(st.session_state.get("opt_chunk_size", settings.CHUNK_SIZE)),
         "chunk_overlap": int(st.session_state.get("opt_chunk_overlap", settings.CHUNK_OVERLAP)),
         "min_chars": int(st.session_state.get("opt_min_chars", settings.MIN_CHARS_PER_DOC)),
@@ -271,13 +266,9 @@ def _get_opt() -> Dict[str, Any]:
         "skip_low_text": bool(st.session_state.get("opt_skip_low_text", settings.SKIP_LOW_TEXT_DOCS)),
         "pre_summarize": bool(st.session_state.get("opt_pre_summarize", settings.PRE_SUMMARIZE_DOCS)),
     }
-    return g
 
 def _maybe_summarize_docs(docs: List[Any]) -> None:
-    """옵션이 켜진 경우, 각 문서의 요약을 메타데이터에 저장. 실패해도 무시."""
-    if not docs:
-        return
-    if not _get_opt()["pre_summarize"]:
+    if not docs or not _get_opt()["pre_summarize"]:
         return
     try:
         from llama_index.core import Settings
@@ -302,7 +293,6 @@ def _maybe_summarize_docs(docs: List[Any]) -> None:
         pass
 
 def _preprocess_docs(docs: List[Any], seen_hashes: set, min_chars: int, dedup: bool) -> Tuple[List[Any], Dict[str, Any]]:
-    """텍스트 정리/중복제거/저품질 필터링. 리턴: (유효문서, 통계)"""
     kept: List[Any] = []
     stats = {"input_docs": len(docs), "kept": 0, "skipped_low_text": 0, "skipped_dup": 0, "total_chars": 0}
     for d in docs:
@@ -335,28 +325,31 @@ def _save_quality_report(data: Dict[str, Any], path: str = QUALITY_REPORT_PATH) 
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2, sort_keys=True)
 
-# ====== 인덱스 생성(체크포인트 + 최적화 파이프라인) ===========================
+# ====== 인덱스 생성(체크포인트 + 최적화 + 중지 지원) ==========================
 def _build_index_with_checkpoint(update_pct: Callable[[int, str | None], None],
                                  update_msg: Callable[[str], None],
                                  gdrive_folder_id: str,
                                  gcp_creds: Mapping[str, Any],
                                  persist_dir: str,
-                                 remote_manifest: Dict[str, Dict]):
+                                 remote_manifest: Dict[str, Dict],
+                                 should_stop: Callable[[], bool] | None = None):
     """
     파일ID 단위 처리 → 각 파일 완주 후 저장 & 체크포인트 기록.
-    전처리(클린업/저품질 필터/중복 제거) → SentenceSplitter 청킹 → 인덱스에 누적 추가.
+    전처리(정리/저품질 필터/중복 제거) → SentenceSplitter 청킹 → 인덱스 누적.
+    중지 버튼(should_stop=True) 감지 시 '현재 파일까지' 저장 후 안전 종료.
     """
     from llama_index.core import VectorStoreIndex, load_index_from_storage
     from llama_index.core.node_parser import SentenceSplitter
     from llama_index.readers.google import GoogleDriveReader
 
+    if should_stop is None:
+        should_stop = lambda: False  # 기본: 중지 없음
+
     opt = _get_opt()
 
-    # 준비
     update_pct(15, "Drive 리더 초기화")
     loader = GoogleDriveReader(service_account_key=gcp_creds)
 
-    # 체크포인트/대상 목록 계산
     cp = _load_checkpoint()
     todo_ids: List[str] = []
     for fid, meta in remote_manifest.items():
@@ -370,7 +363,6 @@ def _build_index_with_checkpoint(update_pct: Callable[[int, str | None], None],
     done_cnt = total - pending
     update_pct(30, f"문서 목록 불러오는 중 • 전체 {total}개, 이번에 처리 {pending}개")
 
-    # 저장 컨텍스트(있으면 이어쓰기)
     os.makedirs(persist_dir, exist_ok=True)
     storage_context = _make_storage_context(persist_dir)
     try:
@@ -378,16 +370,12 @@ def _build_index_with_checkpoint(update_pct: Callable[[int, str | None], None],
     except Exception:
         pass
 
-    # 품질 리포트 준비
+    # 품질 리포트
     qrep = _load_quality_report()
     qrep.setdefault("summary", {}).setdefault("total_docs", total)
-    qrep.setdefault("summary", {}).setdefault("processed_docs", 0)
-    qrep.setdefault("summary", {}).setdefault("kept_docs", 0)
-    qrep.setdefault("summary", {}).setdefault("skipped_low_text", 0)
-    qrep.setdefault("summary", {}).setdefault("skipped_dup", 0)
-    qrep.setdefault("summary", {}).setdefault("total_chars", 0)
+    for k in ("processed_docs","kept_docs","skipped_low_text","skipped_dup","total_chars"):
+        qrep["summary"].setdefault(k, 0)
     qrep.setdefault("files", {})
-
     seen_hashes = set(h for h in qrep.get("files", {}).values() if isinstance(h, dict) and "text_hash" in h)
 
     if pending == 0:
@@ -400,29 +388,31 @@ def _build_index_with_checkpoint(update_pct: Callable[[int, str | None], None],
 
     splitter = SentenceSplitter(chunk_size=opt["chunk_size"], chunk_overlap=opt["chunk_overlap"])
 
-    # 파일 단위로 이어서 인덱싱
     for i, fid in enumerate(todo_ids, start=1):
+        # 중지 요청이 '다음 파일로 넘어가기 전'에 들어온 경우: 바로 종료
+        if should_stop():
+            update_msg("🛑 중지 요청 감지 — 현재까지 저장 후 종료합니다.")
+            break
+
         meta = remote_manifest.get(fid, {})
         fname = meta.get("name") or fid
         update_msg(f"전처리 • {fname} ({done_cnt + i}/{total})")
 
-        # 1) 파일 1개 로드
+        # 1) 파일 로드
         try:
             docs = loader.load_data(file_ids=[fid])
         except TypeError:
             st.error("GoogleDriveReader 버전이 오래되어 file_ids 옵션을 지원하지 않습니다. requirements 업데이트가 필요합니다.")
             st.stop()
 
-        # 2) 전처리/필터/중복제거
+        # 2) 전처리/필터/중복
         kept, stats = _preprocess_docs(
             docs, seen_hashes,
             min_chars=opt["min_chars"], dedup=opt["dedup"]
         )
-
-        # 선택: 문서 요약 메타데이터
         _maybe_summarize_docs(kept)
 
-        # 3) 품질 리포트 파일별 기록
+        # 3) 품질 리포트 기록(파일 단위)
         qrep["files"][fid] = {
             "name": fname,
             "md5": meta.get("md5"),
@@ -432,22 +422,26 @@ def _build_index_with_checkpoint(update_pct: Callable[[int, str | None], None],
             "skipped_dup": stats["skipped_dup"],
             "total_chars": stats["total_chars"],
         }
-        qsum = qrep["summary"]
-        qsum["processed_docs"] += 1
-        qsum["kept_docs"] += stats["kept"]
-        qsum["skipped_low_text"] += stats["skipped_low_text"]
-        qsum["skipped_dup"] += stats["skipped_dup"]
-        qsum["total_chars"] += stats["total_chars"]
-        _save_quality_report(qrep)  # 매 파일마다 즉시 저장(중단 대비)
+        qs = qrep["summary"]
+        qs["processed_docs"] += 1
+        qs["kept_docs"] += stats["kept"]
+        qs["skipped_low_text"] += stats["skipped_low_text"]
+        qs["skipped_dup"] += stats["skipped_dup"]
+        qs["total_chars"] += stats["total_chars"]
+        _save_quality_report(qrep)
 
         if stats["kept"] == 0:
-            # 체크포인트만 갱신하고 다음 파일로
+            # 텍스트가 없거나 중복만 → 완료 체크만 하고 다음 파일
             _mark_done(cp, fid, meta)
             pct = 30 + int((i / max(1, pending)) * 60)
             update_pct(pct, f"건너뜀 • {fname} (저품질/중복)")
+            # 중지 요청이 이 시점에 들어왔으면 여기서 종료
+            if should_stop():
+                update_msg("🛑 중지 요청 감지 — 현재까지 저장 후 종료합니다.")
+                break
             continue
 
-        # 4) 인덱스에 누적 추가(청킹 변환 적용)
+        # 4) 인덱스에 누적 추가(청킹 적용)
         update_msg(f"인덱스 생성 • {fname} ({done_cnt + i}/{total})")
         try:
             VectorStoreIndex.from_documents(
@@ -455,17 +449,22 @@ def _build_index_with_checkpoint(update_pct: Callable[[int, str | None], None],
                 transformations=[splitter]
             )
             storage_context.persist(persist_dir=persist_dir)  # 부분 진행 저장
-            _mark_done(cp, fid, meta)
+            _mark_done(cp, fid, meta)  # 파일 '완료'로 체크포인트 기록
         except Exception as e:
             st.error(f"인덱스 생성 중 오류: {fname}")
             with st.expander("자세한 오류 보기"):
                 st.exception(e)
             st.stop()
 
-        pct = 30 + int((i / max(1, pending)) * 60)  # 30→90 사이
+        pct = 30 + int((i / max(1, pending)) * 60)
         update_pct(pct, f"완료 • {fname}")
 
-    # 5) 최종 저장
+        # 5) 파일 경계에서 중지 요청 확인 → 안전 종료
+        if should_stop():
+            update_msg("🛑 중지 요청 감지 — 현재 파일까지 저장 완료, 종료합니다.")
+            break
+
+    # 최종 저장 및 인덱스 반환(부분 진행이어도 안전)
     update_pct(95, "두뇌 저장 중")
     try:
         storage_context.persist(persist_dir=persist_dir)
@@ -479,40 +478,15 @@ def _build_index_with_checkpoint(update_pct: Callable[[int, str | None], None],
     from llama_index.core import load_index_from_storage
     return load_index_from_storage(storage_context)
 
-# (참고) 일괄 빌드 함수(예비용)
-def _build_index_with_progress(update_pct: Callable[[int, str | None], None],
-                               update_msg: Callable[[str], None],
-                               gdrive_folder_id: str,
-                               gcp_creds: Mapping[str, Any],
-                               persist_dir: str):
-    from llama_index.core import VectorStoreIndex
-    from llama_index.readers.google import GoogleDriveReader
-    from llama_index.core.node_parser import SentenceSplitter
-
-    loader = GoogleDriveReader(service_account_key=gcp_creds)
-    update_pct(30, "문서 목록 불러오는 중")
-    documents = loader.load_data(folder_id=gdrive_folder_id)
-    if not documents:
-        st.error("강의 자료 폴더가 비었거나 권한 문제입니다. folder_id/공유권한을 확인하세요.")
-        st.stop()
-
-    splitter = SentenceSplitter(chunk_size=settings.CHUNK_SIZE, chunk_overlap=settings.CHUNK_OVERLAP)
-    update_pct(60, f"문서 {len(documents)}개 로드 → 인덱스 생성")
-    index = VectorStoreIndex.from_documents(documents, show_progress=True, transformations=[splitter])
-
-    update_pct(90, "두뇌 저장 중")
-    index.storage_context.persist(persist_dir=persist_dir)
-    update_pct(100, "완료")
-    return index
-
 # ====== 변경 감지 → 인덱스 준비(체크포인트 포함) ==============================
 def get_or_build_index(update_pct: Callable[[int, str | None], None],
                        update_msg: Callable[[str], None],
                        gdrive_folder_id: str,
                        raw_sa: Any | None,
                        persist_dir: str,
-                       manifest_path: str):
-    """Drive 변경을 감지해 저장본을 쓰거나, 변경 시에만 재인덱싱(체크포인트 지원)."""
+                       manifest_path: str,
+                       should_stop: Callable[[], bool] | None = None):
+    """Drive 변경을 감지해 저장본을 쓰거나, 변경 시에만 재인덱싱(체크포인트 & 중지 지원)."""
     update_pct(5, "드라이브 변경 확인 중…")
     gcp_creds = _validate_sa(_normalize_sa(raw_sa))
 
@@ -540,7 +514,6 @@ def get_or_build_index(update_pct: Callable[[int, str | None], None],
                 return True
         return False
 
-    # 변경 없음 → 저장본 바로 로드
     if os.path.exists(persist_dir) and not _manifests_differ(local, remote):
         update_pct(25, "변경 없음 → 저장된 두뇌 로딩")
         from llama_index.core import StorageContext, load_index_from_storage
@@ -549,15 +522,29 @@ def get_or_build_index(update_pct: Callable[[int, str | None], None],
         update_pct(100, "완료!")
         return idx
 
-    # 변경 있음 → 체크포인트 이어서 빌드
     update_pct(40, "변경 감지 → 전처리/청킹/인덱스 생성 (체크포인트)")
-    idx = _build_index_with_checkpoint(update_pct, update_msg, gdrive_folder_id, gcp_creds, persist_dir, remote)
+    idx = _build_index_with_checkpoint(
+        update_pct, update_msg, gdrive_folder_id, gcp_creds, persist_dir, remote,
+        should_stop=should_stop
+    )
 
-    # 새 매니페스트 저장 & 체크포인트 정리
-    os.makedirs(os.path.dirname(manifest_path), exist_ok=True)
-    with open(manifest_path, "w", encoding="utf-8") as fp:
-        json.dump(remote, fp, ensure_ascii=False, indent=2, sort_keys=True)
-    clear_checkpoint()
+    # 새 매니페스트 저장 & 체크포인트 정리(완주했을 때만)
+    if not (should_stop and should_stop()):
+        os.makedirs(os.path.dirname(manifest_path), exist_ok=True)
+        with open(manifest_path, "w", encoding="utf-8") as fp:
+            json.dump(remote, fp, ensure_ascii=False, indent=2, sort_keys=True)
+        # 모든 파일 완료했을 때만 체크포인트를 비움
+        # (중지한 경우에는 남겨두어 재개 지점으로 사용)
+        if os.path.exists(CHECKPOINT_PATH):
+            try:
+                with open(CHECKPOINT_PATH, "r", encoding="utf-8") as f:
+                    cp = json.load(f)
+                # 모두 완료인지 빠르게 확인
+                all_done = set(cp.keys()) == set(remote.keys())
+                if all_done:
+                    os.remove(CHECKPOINT_PATH)
+            except Exception:
+                pass
 
     update_pct(100, "완료!")
     return idx
