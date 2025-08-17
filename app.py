@@ -8,8 +8,9 @@ os.environ["STREAMLIT_SERVER_ENABLE_WEBSOCKET_COMPRESSION"] = "false"
 
 import time
 import streamlit as st
+import json
 
-from src.config import settings, APP_DATA_DIR, PERSIST_DIR, MANIFEST_PATH
+from src.config import settings, APP_DATA_DIR, PERSIST_DIR, MANIFEST_PATH, QUALITY_REPORT_PATH
 from src.ui import (
     load_css, safe_render_header, ensure_progress_css,
     render_progress_bar, render_stepper
@@ -19,7 +20,7 @@ from src.rag_engine import (
     get_or_build_index, init_llama_settings, get_text_answer,
     _load_index_from_disk, try_restore_index_from_drive,
     export_brain_to_drive, prune_old_backups, _normalize_sa, _validate_sa,
-    INDEX_BACKUP_PREFIX, CHECKPOINT_PATH,  # ← 체크포인트 경로 임포트
+    INDEX_BACKUP_PREFIX, CHECKPOINT_PATH,
 )
 from src.auth import admin_login_flow
 
@@ -73,37 +74,53 @@ def _auto_attach_or_restore_silently() -> bool:
 if "query_engine" not in st.session_state:
     _auto_attach_or_restore_silently()
 
-# ── (옵션) 진단 패널(이전 답변에서 추가했던 것 유지) ───────────────────────────
-def render_index_diagnostics():
-    import math, time
-    st.subheader("🧪 인덱스 상태 진단", divider="gray")
-    st.caption("관리자에게만 보이는 진단 패널입니다.")
-    exists = os.path.isdir(PERSIST_DIR)
-    st.write(f"• 로컬 저장 경로: `{PERSIST_DIR}` → {'존재' if exists else '없음'}")
-    st.write(f"• 체크포인트: `{CHECKPOINT_PATH}` → {'존재' if os.path.exists(CHECKPOINT_PATH) else '없음'}")
-    if exists:
-        total_files, total_bytes = 0, 0
-        for root, _, files in os.walk(PERSIST_DIR):
-            for name in files:
-                full = os.path.join(root, name)
-                try:
-                    total_files += 1
-                    total_bytes += os.path.getsize(full)
-                except Exception:
-                    pass
-        def _fmt(n:int)->str:
-            for u in ["B","KB","MB","GB","TB"]:
-                if n < 1024: return f"{n} {u}"
-                n//=1024
-            return f"{n} TB"
-        st.write(f"• 파일 수: {total_files:,}개, 용량: ~{_fmt(total_bytes)}")
-        try:
-            idx = _load_index_from_disk(PERSIST_DIR)
-            st.success("✅ 인덱스 로딩 성공")
-        except Exception as e:
-            st.error("❌ 인덱스 로딩 실패")
-            with st.expander("오류 보기"):
-                st.exception(e)
+# ── 품질 리포트 뷰어 ───────────────────────────────────────────────────────────
+def render_quality_report_view():
+    st.subheader("📊 최적화 품질 리포트", divider="gray")
+    if not os.path.exists(QUALITY_REPORT_PATH):
+        st.info("아직 리포트가 없습니다. 인덱싱을 한 뒤에 자동 생성됩니다.")
+        return
+    try:
+        with open(QUALITY_REPORT_PATH, "r", encoding="utf-8") as f:
+            rep = json.load(f)
+    except Exception as e:
+        st.error("리포트 파일을 읽는 중 오류.")
+        with st.expander("오류 보기"):
+            st.exception(e)
+        return
+
+    s = rep.get("summary", {})
+    st.write(
+        f"- 전체 문서: **{s.get('total_docs', 0)}**개  "
+        f"- 처리 파일: **{s.get('processed_docs', 0)}**개  "
+        f"- 채택(kept): **{s.get('kept_docs', 0)}**개  "
+        f"- 스킵(저품질): **{s.get('skipped_low_text', 0)}**개  "
+        f"- 스킵(중복): **{s.get('skipped_dup', 0)}**개  "
+        f"- 총 본문 문자수: **{s.get('total_chars', 0):,}**"
+    )
+    with st.expander("파일별 상세"):
+        files = rep.get("files", {})
+        rows = []
+        for fid, info in files.items():
+            rows.append([
+                info.get("name", fid),
+                info.get("kept", 0),
+                info.get("skipped_low_text", 0),
+                info.get("skipped_dup", 0),
+                info.get("total_chars", 0),
+                info.get("modifiedTime", ""),
+            ])
+        if rows:
+            st.dataframe(
+                rows,
+                column_config={
+                    0: "파일명", 1: "채택", 2: "저품질 스킵", 3: "중복 스킵", 4: "문자수", 5: "수정시각",
+                },
+                hide_index=True,
+                use_container_width=True,
+            )
+        else:
+            st.caption("아직 수집된 파일 통계가 없습니다.")
 
 # ── 관리자 전용 패널 ──────────────────────────────────────────────────────────
 if is_admin:
@@ -127,6 +144,34 @@ if is_admin:
             st.session_state["response_mode"] = mode_sel
             st.success("RAG/LLM 설정이 저장되었습니다. (다음 쿼리부터 반영)")
 
+    # (신규) 최적화 옵션 UI
+    with st.expander("🧩 최적화 설정(전처리/청킹/중복제거)", expanded=True):
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            st.session_state.setdefault("opt_chunk_size", settings.CHUNK_SIZE)
+            st.session_state.setdefault("opt_chunk_overlap", settings.CHUNK_OVERLAP)
+            cs = st.number_input("청크 크기(문자)", 200, 2000, int(st.session_state["opt_chunk_size"]), 50)
+            co = st.number_input("청크 오버랩(문자)", 0, 400, int(st.session_state["opt_chunk_overlap"]), 10)
+        with c2:
+            st.session_state.setdefault("opt_min_chars", settings.MIN_CHARS_PER_DOC)
+            st.session_state.setdefault("opt_dedup", settings.DEDUP_BY_TEXT_HASH)
+            mc = st.number_input("문서 최소 길이(문자)", 100, 3000, int(st.session_state["opt_min_chars"]), 50)
+            dd = st.toggle("텍스트 해시로 중복 제거", value=bool(st.session_state["opt_dedup"]))
+        with c3:
+            st.session_state.setdefault("opt_skip_low_text", settings.SKIP_LOW_TEXT_DOCS)
+            st.session_state.setdefault("opt_pre_summarize", settings.PRE_SUMMARIZE_DOCS)
+            slt = st.toggle("저품질(짧은/빈약) 문서 스킵", value=bool(st.session_state["opt_skip_low_text"]))
+            psu = st.toggle("문서 요약 메타데이터 생성(느려짐)", value=bool(st.session_state["opt_pre_summarize"]))
+
+        if st.button("최적화 설정 적용"):
+            st.session_state["opt_chunk_size"] = int(cs)
+            st.session_state["opt_chunk_overlap"] = int(co)
+            st.session_state["opt_min_chars"] = int(mc)
+            st.session_state["opt_dedup"] = bool(dd)
+            st.session_state["opt_skip_low_text"] = bool(slt)
+            st.session_state["opt_pre_summarize"] = bool(psu)
+            st.success("최적화 설정이 저장되었습니다. 다음 인덱싱부터 적용됩니다.")
+
     with st.expander("🛠️ 관리자 도구", expanded=False):
         c1, c2, c3 = st.columns(3)
         with c1:
@@ -134,8 +179,8 @@ if is_admin:
                 import shutil
                 if os.path.exists(PERSIST_DIR):
                     shutil.rmtree(PERSIST_DIR)
-                # 체크포인트/매니페스트도 함께 삭제
-                for p in (CHECKPOINT_PATH, MANIFEST_PATH):
+                # 체크포인트/매니페스트/리포트도 함께 삭제
+                for p in (CHECKPOINT_PATH, MANIFEST_PATH, QUALITY_REPORT_PATH):
                     try:
                         if os.path.exists(p): os.remove(p)
                     except Exception:
@@ -175,24 +220,31 @@ if is_admin:
                         st.exception(e)
 
     with st.expander("🔎 인덱스 상태 진단", expanded=False):
-        render_index_diagnostics()
+        # 간단 진단
+        st.write(f"• 로컬 저장 경로: `{PERSIST_DIR}` → {'존재' if os.path.isdir(PERSIST_DIR) else '없음'}")
+        st.write(f"• 체크포인트: `{CHECKPOINT_PATH}` → {'존재' if os.path.exists(CHECKPOINT_PATH) else '없음'}")
+        render_quality_report_view()
 
 # ── 메인 워크플로우 ───────────────────────────────────────────────────────────
 def main():
+    # 준비되어 있으면 채팅으로 바로 진입
     if "query_engine" in st.session_state:
         render_chat_ui()
         return
 
+    # 두뇌가 없고, 관리자만 준비 UI를 봄
     if is_admin:
-        st.info("AI 교사를 준비하려면 아래 버튼을 누르세요. (체크포인트로 중간부터 이어서 인덱싱합니다)")
+        st.info("AI 교사를 준비하려면 아래 버튼을 누르세요. (체크포인트/전처리/청킹 포함)")
 
         if st.button("🧠 AI 두뇌 준비 시작하기"):
+            # 진행 UI 슬롯
             stepper_slot = st.empty(); bar_slot = st.empty(); msg_slot = st.empty()
 
             steps = [("check","드라이브 변경 확인"),("init","Drive 리더 초기화"),
                      ("list","문서 목록 불러오는 중"),("index","인덱스 생성"),("save","두뇌 저장")]
             st.session_state["_step_status"] = {k:"pending" for k,_ in steps}
             st.session_state["_step_curr"] = None
+
             def _set_active(key:str):
                 prev = st.session_state.get("_step_curr")
                 if prev and st.session_state["_step_status"].get(prev)=="active":
@@ -200,6 +252,7 @@ def main():
                 st.session_state["_step_status"][key] = "active"
                 st.session_state["_step_curr"] = key
                 render_stepper(stepper_slot, steps, st.session_state["_step_status"], sticky=True)
+
             def _set_done_all():
                 for k,_ in steps: st.session_state["_step_status"][k] = "done"
                 render_stepper(stepper_slot, steps, st.session_state["_step_status"], sticky=True)
@@ -212,6 +265,7 @@ def main():
                 st.session_state["_gp_pct"] = max(0, min(100, int(pct)))
                 render_progress_bar(bar_slot, st.session_state["_gp_pct"])
                 if msg is not None: update_msg(msg)
+
             def update_msg(text:str):
                 if "변경 확인" in text: _set_active("check")
                 elif "리더 초기화" in text: _set_active("init")
@@ -221,27 +275,28 @@ def main():
                 elif "완료" in text: _set_done_all()
                 msg_slot.markdown(f"<div class='gp-msg'>{text}</div>", unsafe_allow_html=True)
 
+            # 1) LLM/Embedding 준비
             init_llama_settings(
                 api_key=settings.GEMINI_API_KEY.get_secret_value(),
                 llm_model=settings.LLM_MODEL,
                 embed_model=settings.EMBED_MODEL,
                 temperature=float(st.session_state.get("temperature", 0.0)),
             )
-
+            # 2) 인덱스 준비/빌드(최적화 파이프라인 내장)
             index = get_or_build_index(
                 update_pct=update_pct, update_msg=update_msg,
                 gdrive_folder_id=settings.GDRIVE_FOLDER_ID,
                 raw_sa=settings.GDRIVE_SERVICE_ACCOUNT_JSON,
                 persist_dir=PERSIST_DIR, manifest_path=MANIFEST_PATH,
             )
-
+            # 3) 엔진 연결
             st.session_state.query_engine = index.as_query_engine(
                 response_mode=st.session_state.get("response_mode", settings.RESPONSE_MODE),
                 similarity_top_k=int(st.session_state.get("similarity_top_k", settings.SIMILARITY_TOP_K)),
             )
             update_pct(100, "완료!"); time.sleep(0.4)
 
-            # 자동 백업(+오래된 백업 정리)
+            # 4) 자동 백업(+오래된 백업 정리)
             if settings.AUTO_BACKUP_TO_DRIVE:
                 try:
                     creds = _validate_sa(_normalize_sa(settings.GDRIVE_SERVICE_ACCOUNT_JSON))
