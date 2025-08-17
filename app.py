@@ -157,47 +157,83 @@ with colR:
 
 # ============= 6.5) 📤 관리자: 자료 업로드 (원본 → prepared 저장) ===============
 with st.expander("📤 관리자: 자료 업로드 (원본→prepared 저장)", expanded=False):
-    st.caption("PDF 원본을 prepared 폴더에 저장합니다. 텍스트 추출물은 인덱스 캐시에만 저장됩니다.")
-    files = st.file_uploader("PDF 파일을 선택하세요", type=["pdf"], accept_multiple_files=True)
+    st.caption("여러 PDF를 한 번에 업로드합니다. 원본은 prepared 폴더에 저장되며, 텍스트 추출물은 인덱스 캐시에만 저장됩니다.")
+    files = st.file_uploader(
+        "PDF 파일을 선택하세요 (여러 개 가능)",
+        type=["pdf"],                 # ← 필요 시 ["pdf","docx","md","txt","pptx"]로 확장 가능
+        accept_multiple_files=True
+    )
+
+    # 진행 상태 표시용 위젯
+    prog = st.progress(0, text="대기 중…")
+    status_area = st.empty()
+    result_area = st.empty()
+
     if files and st.button("업로드 → prepared", type="primary"):
         try:
             import io, re, time
             from googleapiclient.discovery import build
             from googleapiclient.http import MediaIoBaseUpload
             from src.rag_engine import _normalize_sa
+            from src.config import settings
 
-            # 서비스계정으로 Drive 클라이언트 생성
+            # 0) 서비스계정으로 Drive 클라이언트 생성
             creds = _normalize_sa(settings.GDRIVE_SERVICE_ACCOUNT_JSON)
             drive = build("drive", "v3", credentials=creds)
 
-            uploaded, links = 0, []
-            for f in files:
+            # 1) 업로드 루프
+            total = len(files)
+            rows = []       # 결과표
+            uploaded = 0
+
+            for i, f in enumerate(files, start=1):
+                # (1) 파일 읽기
                 data = f.read()
                 buf = io.BytesIO(data)
 
-                # 파일명: 타임스탬프__원본이름 (중복/정렬에 유리)
+                # (2) 파일명: 타임스탬프__원본이름 (정렬/중복 방지)
                 ts = time.strftime("%Y%m%d_%H%M%S")
                 base = re.sub(r"[^\w\-. ]", "_", f.name)
                 name = f"{ts}__{base}"
+
+                # (3) 업로드
+                prog.progress(int(i / total * 100), text=f"업로드 중… ({i}/{total})")
+                status_area.info(f"업로드 중: {name}")
 
                 media = MediaIoBaseUpload(buf, mimetype="application/pdf", resumable=False)
                 meta = {"name": name, "parents": [settings.GDRIVE_FOLDER_ID]}
 
                 res = drive.files().create(body=meta, media_body=media, fields="id,webViewLink").execute()
-                links.append((name, res.get("webViewLink")))
+                rows.append({"name": name, "open": res.get("webViewLink")})
                 uploaded += 1
 
-            if uploaded:
-                st.success(f"{uploaded}개 업로드 완료 (prepared)")
-                for n, l in links:
-                    st.markdown(f"- [{n}]({l})")
-                st.toast("업로드 완료 — 변경 사항은 인덱싱 시 반영됩니다.", icon="✅")
+                # 드라이브 API rate-limit 완화(가벼운 텀)
+                time.sleep(0.1)
 
-                # 인덱싱 다시 돌릴 수 있도록 준비 버튼 활성화
-                ss.prep_both_done = False
+            # 2) 요약 출력
+            prog.progress(100, text="완료")
+            status_area.success(f"{uploaded}개 업로드 완료 (prepared)")
+
+            if rows:
+                df = pd.DataFrame(rows)
+                result_area.dataframe(
+                    df, use_container_width=True, hide_index=True,
+                    column_config={"name": st.column_config.TextColumn("파일명"),
+                                   "open": st.column_config.LinkColumn("열기", display_text="열기")}
+                )
+            st.toast("업로드 완료 — 변경 사항은 인덱싱 시 반영됩니다.", icon="✅")
+
+            # 3) 인덱싱을 다시 돌릴 수 있게 준비 버튼 재활성화
+            ss.prep_both_done = False
 
         except Exception as e:
-            st.error(f"업로드 실패: {e}")
+            prog.progress(0, text="오류")
+            status_area.error(f"업로드 실패: {e}")
+
+# ==============================================================================
+
+# ============= 7) 인덱싱 보고서(스킵된 파일 포함) ===============================
+
 
 
 # ============= 7) 인덱싱 보고서(스킵된 파일 포함) ===============================
