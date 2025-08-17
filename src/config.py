@@ -8,15 +8,26 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # 프로젝트 디렉토리
 ROOT_DIR = Path(__file__).resolve().parent.parent
+
+# 앱 데이터/저장 경로
 APP_DATA_DIR = Path(os.environ.get("APP_DATA_DIR", "/tmp/my_ai_teacher")).resolve()
 PERSIST_DIR = (APP_DATA_DIR / "storage_gdrive").resolve()
 REPORT_DIR = (APP_DATA_DIR / "reports").resolve()
 REPORT_DIR.mkdir(parents=True, exist_ok=True)
+
 QUALITY_REPORT_PATH = str((REPORT_DIR / "quality_report.json").resolve())
 MANIFEST_PATH = str((APP_DATA_DIR / "drive_manifest.json").resolve())
 
 class Settings(BaseSettings):
+    """
+    환경변수/Secrets로 오버라이드 가능한 앱 설정.
+    접두사는 APP_ (예: APP_USE_BG_IMAGE=false)
+    """
     model_config = SettingsConfigDict(env_prefix="APP_", env_file=".env", case_sensitive=False)
+
+    # ——— UI ———
+    USE_BG_IMAGE: bool = True                           # 배경 이미지 사용 여부
+    BG_IMAGE_PATH: str = "assets/background_book.png"  # 기본 배경 이미지 경로
 
     # ——— 모델/임베딩 ———
     GEMINI_API_KEY: str = Field(default="", description="Google Generative AI API Key")
