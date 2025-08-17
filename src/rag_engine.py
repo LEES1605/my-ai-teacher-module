@@ -1,6 +1,6 @@
 # src/rag_engine.py
 from __future__ import annotations
-import os, json, shutil, io, zipfile
+import os, json, shutil, io, zipfile, hashlib, re
 from typing import Callable, Any, Mapping, List, Tuple, Dict
 from datetime import datetime
 try:
@@ -9,7 +9,7 @@ except Exception:
     ZoneInfo = None  # 폴백
 
 import streamlit as st
-from src.config import settings, APP_DATA_DIR
+from src.config import settings, APP_DATA_DIR, QUALITY_REPORT_PATH
 
 # ====== 백업 파일명 규칙(날짜 포함) ===========================================
 INDEX_BACKUP_PREFIX = "ai_brain_cache"  # 결과: ai_brain_cache-YYYYMMDD-HHMMSS.zip
@@ -234,22 +234,108 @@ def clear_checkpoint(path: str = CHECKPOINT_PATH) -> None:
 
 # ====== 저장본 존재 체크 & 안전한 StorageContext 생성 =========================
 def _has_persisted_index(persist_dir: str) -> bool:
-    """LlamaIndex 저장본의 핵심 파일이 하나라도 있으면 True."""
     names = ("docstore.json", "index_store.json", "vector_store.json")
     return any(os.path.exists(os.path.join(persist_dir, n)) for n in names)
 
 def _make_storage_context(persist_dir: str):
-    """저장본이 있으면 로드, 없으면 빈 컨텍스트로 시작(초기 인덱싱에서 FileNotFound 방지)."""
     from llama_index.core import StorageContext
     try:
         if _has_persisted_index(persist_dir):
             return StorageContext.from_defaults(persist_dir=persist_dir)
     except Exception:
-        # 파손/부분 저장본일 수 있음 → 깨끗한 컨텍스트로 시작
         pass
     return StorageContext.from_defaults()
 
-# ====== 인덱스 생성(체크포인트 지원) ==========================================
+# ====== 품질 유틸(전처리·중복·리포트) =========================================
+_ws_re = re.compile(r"[ \t\f\v]+")
+def _clean_text(s: str) -> str:
+    s = s.replace("\u00a0", " ").replace("\r", "\n")
+    s = re.sub(r"\n{3,}", "\n\n", s)
+    s = _ws_re.sub(" ", s)
+    return s.strip()
+
+def _sha1(s: str) -> str:
+    return hashlib.sha1(s.encode("utf-8", errors="ignore")).hexdigest()
+
+def _approx_tokens(chars: int) -> int:
+    # 대략적 추정(영/한 혼재 고려해 완충값)
+    return max(1, int(chars / 3.5))
+
+def _get_opt() -> Dict[str, Any]:
+    # 세션에서 오버라이드 가능(없으면 settings)
+    g = {
+        "chunk_size": int(st.session_state.get("opt_chunk_size", settings.CHUNK_SIZE)),
+        "chunk_overlap": int(st.session_state.get("opt_chunk_overlap", settings.CHUNK_OVERLAP)),
+        "min_chars": int(st.session_state.get("opt_min_chars", settings.MIN_CHARS_PER_DOC)),
+        "dedup": bool(st.session_state.get("opt_dedup", settings.DEDUP_BY_TEXT_HASH)),
+        "skip_low_text": bool(st.session_state.get("opt_skip_low_text", settings.SKIP_LOW_TEXT_DOCS)),
+        "pre_summarize": bool(st.session_state.get("opt_pre_summarize", settings.PRE_SUMMARIZE_DOCS)),
+    }
+    return g
+
+def _maybe_summarize_docs(docs: List[Any]) -> None:
+    """옵션이 켜진 경우, 각 문서의 요약을 메타데이터에 저장. 실패해도 무시."""
+    if not docs:
+        return
+    if not _get_opt()["pre_summarize"]:
+        return
+    try:
+        from llama_index.core import Settings
+        for d in docs:
+            if "doc_summary" in getattr(d, "metadata", {}):
+                continue
+            text = (getattr(d, "text", "") or "")[:4000]
+            if not text:
+                continue
+            prompt = (
+                "다음 문서 내용을 교사 시각에서 5줄 이내 핵심 bullet로 요약하라.\n"
+                "교재 단원/개념/예문/핵심 규칙을 간단히 표시하라.\n\n"
+                f"[문서 내용]\n{text}"
+            )
+            try:
+                resp = Settings.llm.complete(prompt)
+                summary = getattr(resp, "text", None) or str(resp)
+                d.metadata["doc_summary"] = summary.strip()
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+def _preprocess_docs(docs: List[Any], seen_hashes: set, min_chars: int, dedup: bool) -> Tuple[List[Any], Dict[str, Any]]:
+    """텍스트 정리/중복제거/저품질 필터링. 리턴: (유효문서, 통계)"""
+    kept: List[Any] = []
+    stats = {"input_docs": len(docs), "kept": 0, "skipped_low_text": 0, "skipped_dup": 0, "total_chars": 0}
+    for d in docs:
+        t = _clean_text(getattr(d, "text", "") or "")
+        if len(t) < min_chars:
+            stats["skipped_low_text"] += 1
+            continue
+        h = _sha1(t)
+        if dedup and h in seen_hashes:
+            stats["skipped_dup"] += 1
+            continue
+        d.text = t
+        d.metadata = dict(getattr(d, "metadata", {}) or {})
+        d.metadata["text_hash"] = h
+        kept.append(d)
+        seen_hashes.add(h)
+        stats["kept"] += 1
+        stats["total_chars"] += len(t)
+    return kept, stats
+
+def _load_quality_report(path: str = QUALITY_REPORT_PATH) -> Dict[str, Any]:
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {"summary": {}, "files": {}}
+
+def _save_quality_report(data: Dict[str, Any], path: str = QUALITY_REPORT_PATH) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2, sort_keys=True)
+
+# ====== 인덱스 생성(체크포인트 + 최적화 파이프라인) ===========================
 def _build_index_with_checkpoint(update_pct: Callable[[int, str | None], None],
                                  update_msg: Callable[[str], None],
                                  gdrive_folder_id: str,
@@ -257,11 +343,14 @@ def _build_index_with_checkpoint(update_pct: Callable[[int, str | None], None],
                                  persist_dir: str,
                                  remote_manifest: Dict[str, Dict]):
     """
-    Google Drive 파일을 '파일ID 단위'로 처리 → 각 파일 완주 후 저장 & 체크포인트 기록.
-    재실행 시 이미 완료한 파일(ID+md5 동일)은 건너뜀.
+    파일ID 단위 처리 → 각 파일 완주 후 저장 & 체크포인트 기록.
+    전처리(클린업/저품질 필터/중복 제거) → SentenceSplitter 청킹 → 인덱스에 누적 추가.
     """
     from llama_index.core import VectorStoreIndex, load_index_from_storage
+    from llama_index.core.node_parser import SentenceSplitter
     from llama_index.readers.google import GoogleDriveReader
+
+    opt = _get_opt()
 
     # 준비
     update_pct(15, "Drive 리더 초기화")
@@ -281,51 +370,102 @@ def _build_index_with_checkpoint(update_pct: Callable[[int, str | None], None],
     done_cnt = total - pending
     update_pct(30, f"문서 목록 불러오는 중 • 전체 {total}개, 이번에 처리 {pending}개")
 
-    # 스토리지 컨텍스트(있으면 이어쓰기, 없으면 새로 시작)
+    # 저장 컨텍스트(있으면 이어쓰기)
     os.makedirs(persist_dir, exist_ok=True)
     storage_context = _make_storage_context(persist_dir)
-
-    # 기존 저장본을 우선 로딩(있다면)
     try:
         _ = load_index_from_storage(storage_context)
     except Exception:
-        pass  # 처음 생성일 수 있음/부분 저장본일 수 있음 → 무시하고 이어쓰기
+        pass
+
+    # 품질 리포트 준비
+    qrep = _load_quality_report()
+    qrep.setdefault("summary", {}).setdefault("total_docs", total)
+    qrep.setdefault("summary", {}).setdefault("processed_docs", 0)
+    qrep.setdefault("summary", {}).setdefault("kept_docs", 0)
+    qrep.setdefault("summary", {}).setdefault("skipped_low_text", 0)
+    qrep.setdefault("summary", {}).setdefault("skipped_dup", 0)
+    qrep.setdefault("summary", {}).setdefault("total_chars", 0)
+    qrep.setdefault("files", {})
+
+    seen_hashes = set(h for h in qrep.get("files", {}).values() if isinstance(h, dict) and "text_hash" in h)
 
     if pending == 0:
         update_pct(95, "변경 없음 → 저장본 그대로 사용")
-        # 기존 저장본 반환(없더라도 위에서 예외 처리)
         try:
             return load_index_from_storage(storage_context)
         except Exception:
-            # 저장본이 아예 없으면 빈 상태이므로, 그대로 진행하지 말고 에러 안내
             st.error("저장된 두뇌가 없는데 변경도 없다고 감지되었습니다. 초기화 후 다시 시도하세요.")
             st.stop()
+
+    splitter = SentenceSplitter(chunk_size=opt["chunk_size"], chunk_overlap=opt["chunk_overlap"])
 
     # 파일 단위로 이어서 인덱싱
     for i, fid in enumerate(todo_ids, start=1):
         meta = remote_manifest.get(fid, {})
-        pretty_name = meta.get("name") or fid
-        update_msg(f"인덱스 생성 • {pretty_name} ({done_cnt + i}/{total})")
+        fname = meta.get("name") or fid
+        update_msg(f"전처리 • {fname} ({done_cnt + i}/{total})")
 
+        # 1) 파일 1개 로드
         try:
-            docs = loader.load_data(file_ids=[fid])  # 파일 1개만 로드
+            docs = loader.load_data(file_ids=[fid])
         except TypeError:
             st.error("GoogleDriveReader 버전이 오래되어 file_ids 옵션을 지원하지 않습니다. requirements 업데이트가 필요합니다.")
             st.stop()
 
+        # 2) 전처리/필터/중복제거
+        kept, stats = _preprocess_docs(
+            docs, seen_hashes,
+            min_chars=opt["min_chars"], dedup=opt["dedup"]
+        )
+
+        # 선택: 문서 요약 메타데이터
+        _maybe_summarize_docs(kept)
+
+        # 3) 품질 리포트 파일별 기록
+        qrep["files"][fid] = {
+            "name": fname,
+            "md5": meta.get("md5"),
+            "modifiedTime": meta.get("modifiedTime"),
+            "kept": stats["kept"],
+            "skipped_low_text": stats["skipped_low_text"],
+            "skipped_dup": stats["skipped_dup"],
+            "total_chars": stats["total_chars"],
+        }
+        qsum = qrep["summary"]
+        qsum["processed_docs"] += 1
+        qsum["kept_docs"] += stats["kept"]
+        qsum["skipped_low_text"] += stats["skipped_low_text"]
+        qsum["skipped_dup"] += stats["skipped_dup"]
+        qsum["total_chars"] += stats["total_chars"]
+        _save_quality_report(qrep)  # 매 파일마다 즉시 저장(중단 대비)
+
+        if stats["kept"] == 0:
+            # 체크포인트만 갱신하고 다음 파일로
+            _mark_done(cp, fid, meta)
+            pct = 30 + int((i / max(1, pending)) * 60)
+            update_pct(pct, f"건너뜀 • {fname} (저품질/중복)")
+            continue
+
+        # 4) 인덱스에 누적 추가(청킹 변환 적용)
+        update_msg(f"인덱스 생성 • {fname} ({done_cnt + i}/{total})")
         try:
-            VectorStoreIndex.from_documents(docs, storage_context=storage_context, show_progress=False)
-            storage_context.persist(persist_dir=persist_dir)  # 부분 진행 즉시 저장
-            _mark_done(cp, fid, meta)  # 체크포인트 갱신
+            VectorStoreIndex.from_documents(
+                kept, storage_context=storage_context, show_progress=False,
+                transformations=[splitter]
+            )
+            storage_context.persist(persist_dir=persist_dir)  # 부분 진행 저장
+            _mark_done(cp, fid, meta)
         except Exception as e:
-            st.error(f"인덱스 생성 중 오류: {pretty_name}")
+            st.error(f"인덱스 생성 중 오류: {fname}")
             with st.expander("자세한 오류 보기"):
                 st.exception(e)
             st.stop()
 
         pct = 30 + int((i / max(1, pending)) * 60)  # 30→90 사이
-        update_pct(pct, f"문서 {done_cnt + i}/{total} 로드 → 인덱스 생성")
+        update_pct(pct, f"완료 • {fname}")
 
+    # 5) 최종 저장
     update_pct(95, "두뇌 저장 중")
     try:
         storage_context.persist(persist_dir=persist_dir)
@@ -339,7 +479,7 @@ def _build_index_with_checkpoint(update_pct: Callable[[int, str | None], None],
     from llama_index.core import load_index_from_storage
     return load_index_from_storage(storage_context)
 
-# (참고) 기존 일괄 빌드 함수(미사용)
+# (참고) 일괄 빌드 함수(예비용)
 def _build_index_with_progress(update_pct: Callable[[int, str | None], None],
                                update_msg: Callable[[str], None],
                                gdrive_folder_id: str,
@@ -347,18 +487,18 @@ def _build_index_with_progress(update_pct: Callable[[int, str | None], None],
                                persist_dir: str):
     from llama_index.core import VectorStoreIndex
     from llama_index.readers.google import GoogleDriveReader
+    from llama_index.core.node_parser import SentenceSplitter
 
-    update_pct(15, "Drive 리더 초기화")
     loader = GoogleDriveReader(service_account_key=gcp_creds)
-
     update_pct(30, "문서 목록 불러오는 중")
     documents = loader.load_data(folder_id=gdrive_folder_id)
     if not documents:
         st.error("강의 자료 폴더가 비었거나 권한 문제입니다. folder_id/공유권한을 확인하세요.")
         st.stop()
 
+    splitter = SentenceSplitter(chunk_size=settings.CHUNK_SIZE, chunk_overlap=settings.CHUNK_OVERLAP)
     update_pct(60, f"문서 {len(documents)}개 로드 → 인덱스 생성")
-    index = VectorStoreIndex.from_documents(documents, show_progress=True)
+    index = VectorStoreIndex.from_documents(documents, show_progress=True, transformations=[splitter])
 
     update_pct(90, "두뇌 저장 중")
     index.storage_context.persist(persist_dir=persist_dir)
@@ -372,10 +512,7 @@ def get_or_build_index(update_pct: Callable[[int, str | None], None],
                        raw_sa: Any | None,
                        persist_dir: str,
                        manifest_path: str):
-    """
-    Drive 변경을 감지해 저장본을 쓰거나, 변경 시에만 재인덱싱.
-    재인덱싱은 '파일 단위 체크포인트'를 사용하여 중간 재개를 지원.
-    """
+    """Drive 변경을 감지해 저장본을 쓰거나, 변경 시에만 재인덱싱(체크포인트 지원)."""
     update_pct(5, "드라이브 변경 확인 중…")
     gcp_creds = _validate_sa(_normalize_sa(raw_sa))
 
@@ -413,14 +550,14 @@ def get_or_build_index(update_pct: Callable[[int, str | None], None],
         return idx
 
     # 변경 있음 → 체크포인트 이어서 빌드
-    update_pct(40, "변경 감지 → 문서 로드/인덱스 생성 (체크포인트 사용)")
+    update_pct(40, "변경 감지 → 전처리/청킹/인덱스 생성 (체크포인트)")
     idx = _build_index_with_checkpoint(update_pct, update_msg, gdrive_folder_id, gcp_creds, persist_dir, remote)
 
     # 새 매니페스트 저장 & 체크포인트 정리
     os.makedirs(os.path.dirname(manifest_path), exist_ok=True)
     with open(manifest_path, "w", encoding="utf-8") as fp:
         json.dump(remote, fp, ensure_ascii=False, indent=2, sort_keys=True)
-    clear_checkpoint()  # 모든 파일 완료했으니 체크포인트 비움
+    clear_checkpoint()
 
     update_pct(100, "완료!")
     return idx
