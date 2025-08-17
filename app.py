@@ -155,6 +155,51 @@ with colR:
     else:
         st.warning(msg)
 
+# ============= 6.5) 📤 관리자: 자료 업로드 (원본 → prepared 저장) ===============
+with st.expander("📤 관리자: 자료 업로드 (원본→prepared 저장)", expanded=False):
+    st.caption("PDF 원본을 prepared 폴더에 저장합니다. 텍스트 추출물은 인덱스 캐시에만 저장됩니다.")
+    files = st.file_uploader("PDF 파일을 선택하세요", type=["pdf"], accept_multiple_files=True)
+    if files and st.button("업로드 → prepared", type="primary"):
+        try:
+            import io, re, time
+            from googleapiclient.discovery import build
+            from googleapiclient.http import MediaIoBaseUpload
+            from src.rag_engine import _normalize_sa
+
+            # 서비스계정으로 Drive 클라이언트 생성
+            creds = _normalize_sa(settings.GDRIVE_SERVICE_ACCOUNT_JSON)
+            drive = build("drive", "v3", credentials=creds)
+
+            uploaded, links = 0, []
+            for f in files:
+                data = f.read()
+                buf = io.BytesIO(data)
+
+                # 파일명: 타임스탬프__원본이름 (중복/정렬에 유리)
+                ts = time.strftime("%Y%m%d_%H%M%S")
+                base = re.sub(r"[^\w\-. ]", "_", f.name)
+                name = f"{ts}__{base}"
+
+                media = MediaIoBaseUpload(buf, mimetype="application/pdf", resumable=False)
+                meta = {"name": name, "parents": [settings.GDRIVE_FOLDER_ID]}
+
+                res = drive.files().create(body=meta, media_body=media, fields="id,webViewLink").execute()
+                links.append((name, res.get("webViewLink")))
+                uploaded += 1
+
+            if uploaded:
+                st.success(f"{uploaded}개 업로드 완료 (prepared)")
+                for n, l in links:
+                    st.markdown(f"- [{n}]({l})")
+                st.toast("업로드 완료 — 변경 사항은 인덱싱 시 반영됩니다.", icon="✅")
+
+                # 인덱싱 다시 돌릴 수 있도록 준비 버튼 활성화
+                ss.prep_both_done = False
+
+        except Exception as e:
+            st.error(f"업로드 실패: {e}")
+
+
 # ============= 7) 인덱싱 보고서(스킵된 파일 포함) ===============================
 rep = ss.get("indexing_report")
 if rep:
