@@ -104,14 +104,15 @@ st.markdown("## 🔗 Google Drive 연결 테스트")
 st.caption("서비스계정 저장은 공유드라이브 Writer 권한이 필요합니다. 인덱싱은 Readonly 권한이면 충분합니다.")
 
 from src.config import settings
-from src.rag_engine import (
-    smoke_test_drive,
-    preview_drive_files,
-    drive_diagnostics,   # 서비스계정 JSON 포맷/필수키 진단
-)
+from src.rag_engine import smoke_test_drive, preview_drive_files, drive_diagnostics
 
-# 1) 서비스계정 JSON 진단
-ok_sa, diag = drive_diagnostics(settings.GDRIVE_SERVICE_ACCOUNT_JSON)
+# 1) 서비스계정 JSON 진단 (예외 없어야 함)
+raw_sa = settings.GDRIVE_SERVICE_ACCOUNT_JSON
+try:
+    ok_sa, diag = drive_diagnostics(raw_sa)
+except Exception as e:
+    ok_sa, diag = False, f"진단 함수 예외: {e}\n타입={type(raw_sa).__name__}\n프리뷰={str(raw_sa)[:400]}"
+
 if ok_sa:
     st.success("🔎 Service Account JSON OK")
 else:
@@ -119,7 +120,7 @@ else:
 with st.expander("서비스계정 JSON 진단 상세", expanded=not ok_sa):
     st.code(diag)
 
-# 포맷이 틀리면 아래 기능은 의미 없으니 중단
+# 문제가 있으면 이후 단계는 중단
 if not ok_sa:
     st.stop()
 
