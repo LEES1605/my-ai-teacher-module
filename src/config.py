@@ -1,8 +1,8 @@
 # src/config.py
 from __future__ import annotations
-import os
+import os, json, base64
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Any
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -65,53 +65,91 @@ class Settings(BaseSettings):
 # 인스턴스 생성
 settings = Settings()
 
-# ---------------------------------------------------------------------------
-# 하위호환: Streamlit Secrets의 기존 키도 자동으로 인식해서 보정
-#  - APP_ 접두사 값이 비어 있으면, 동일 키의 비접두사 버전을 찾아 채워줌
-#  - bool/str 변환도 안전하게 처리
-# ---------------------------------------------------------------------------
-def _secrets_get(key: str):
+# --------------------- 하위호환 + 견고한 시크릿 로딩 --------------------------
+def _st_secrets_get(key: str) -> Any:
     try:
         import streamlit as st  # type: ignore
         return st.secrets.get(key, None)
     except Exception:
         return None
 
-def _first_nonempty(*keys: str):
+def _first_nonempty(*keys: str) -> Any:
+    # env -> secrets 순서로 조회
     for k in keys:
-        v = _secrets_get(k)
+        v = os.environ.get(k, None)
+        if v not in (None, "", "null"):
+            return v
+    for k in keys:
+        v = _st_secrets_get(k)
         if v not in (None, "", "null"):
             return v
     return None
 
+def _coerce_json_str(v: Any) -> str:
+    """dict/bytes/base64/str 모두 JSON 문자열로 강제 변환."""
+    if v is None:
+        return ""
+    # dict로 넣은 경우
+    if isinstance(v, (dict, list)):
+        return json.dumps(v, ensure_ascii=False)
+    # bytes -> str
+    if isinstance(v, (bytes, bytearray)):
+        try:
+            v = v.decode("utf-8")
+        except Exception:
+            v = str(v)
+    s = str(v).strip()
+    if not s:
+        return ""
+
+    # base64 가능성
+    # (토큰에 { 나 "type":"service_account" 가 없고, base64처럼 보이면 복호화 시도)
+    looks_b64 = all(c.isalnum() or c in "+/=\n\r" for c in s) and ("{" not in s and "}" not in s)
+    if looks_b64:
+        try:
+            dec = base64.b64decode(s, validate=True).decode("utf-8", errors="ignore").strip()
+            if dec.startswith("{") and dec.endswith("}"):
+                return dec
+        except Exception:
+            pass
+
+    return s
+
+# 서비스계정 JSON 여러 키 이름을 모두 지원
 try:
-    # 서비스계정 JSON
     if not settings.GDRIVE_SERVICE_ACCOUNT_JSON:
-        v = _first_nonempty("APP_GDRIVE_SERVICE_ACCOUNT_JSON", "GDRIVE_SERVICE_ACCOUNT_JSON")
-        if v:
-            settings.GDRIVE_SERVICE_ACCOUNT_JSON = str(v)
+        cand = _first_nonempty(
+            # 권장
+            "APP_GDRIVE_SERVICE_ACCOUNT_JSON",
+            "APP_GDRIVE_SERVICE_ACCOUNT_JSON_B64",
+            # 구키
+            "GDRIVE_SERVICE_ACCOUNT_JSON",
+            "GDRIVE_SERVICE_ACCOUNT_JSON_B64",
+            # 과거/기타 호환 키들
+            "GOOGLE_SERVICE_ACCOUNT_JSON",
+            "SERVICE_ACCOUNT_JSON",
+        )
+        if cand:
+            settings.GDRIVE_SERVICE_ACCOUNT_JSON = _coerce_json_str(cand)
 
-    # 백업 폴더 ID
     if not settings.BACKUP_FOLDER_ID:
-        v = _first_nonempty("APP_BACKUP_FOLDER_ID", "BACKUP_FOLDER_ID")
-        if v:
-            settings.BACKUP_FOLDER_ID = str(v)
+        cand = _first_nonempty("APP_BACKUP_FOLDER_ID", "BACKUP_FOLDER_ID")
+        if cand:
+            settings.BACKUP_FOLDER_ID = str(cand)
 
-    # 관리자 비번
     if not settings.ADMIN_PASSWORD:
-        v = _first_nonempty("APP_ADMIN_PASSWORD", "ADMIN_PASSWORD")
-        if v:
-            settings.ADMIN_PASSWORD = str(v)
+        cand = _first_nonempty("APP_ADMIN_PASSWORD", "ADMIN_PASSWORD")
+        if cand:
+            settings.ADMIN_PASSWORD = str(cand)
 
-    # 배경 이미지 경로/ON/OFF
-    v = _first_nonempty("APP_BG_IMAGE_PATH", "BG_IMAGE_PATH")
-    if v:
-        settings.BG_IMAGE_PATH = str(v)
+    # UI 옵션도 덮어쓰기 허용
+    bgp = _first_nonempty("APP_BG_IMAGE_PATH", "BG_IMAGE_PATH")
+    if bgp:
+        settings.BG_IMAGE_PATH = str(bgp)
 
-    v = _first_nonempty("APP_USE_BG_IMAGE", "USE_BG_IMAGE")
-    if v not in (None, ""):
-        s = str(v).strip().lower()
-        settings.USE_BG_IMAGE = s in ("1", "true", "yes", "on")
+    bgf = _first_nonempty("APP_USE_BG_IMAGE", "USE_BG_IMAGE")
+    if bgf not in (None, ""):
+        settings.USE_BG_IMAGE = str(bgf).strip().lower() in ("1", "true", "yes", "on")
 except Exception:
-    # secrets 미사용 환경 등에서는 조용히 패스
     pass
+# -- end compat
