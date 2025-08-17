@@ -289,8 +289,8 @@ def run_prepare_both_step():
         ss["llm_google"] = g_llm
         ss["qe_google"] = index.as_query_engine(
             llm=g_llm,
-            response_mode=ss.get("response_mode", getattr(settings, "RESPONSE_MODE", "compact")),
-            similarity_top_k=int(ss.get("similarity_top_k", getattr(settings, "SIMILARITY_TOP_K", 5))),
+            response_mode="compact",
+            similarity_top_k=min(3, int(ss.get("similarity_top_k", getattr(settings, "SIMILARITY_TOP_K", 5)))),
         )
         _render_progress(g_bar, g_msg, 100, "완료!")
     except Exception as e:
@@ -304,8 +304,8 @@ def run_prepare_both_step():
             ss["llm_openai"] = o_llm
             ss["qe_openai"] = index.as_query_engine(
                 llm=o_llm,
-                response_mode=ss.get("response_mode", getattr(settings, "RESPONSE_MODE", "compact")),
-                similarity_top_k=int(ss.get("similarity_top_k", getattr(settings, "SIMILARITY_TOP_K", 5))),
+                response_mode="compact",
+                similarity_top_k=min(3, int(ss.get("similarity_top_k", getattr(settings, "SIMILARITY_TOP_K", 5)))),
             )
             _render_progress(o_bar, o_msg, 100, "완료!")
         else:
