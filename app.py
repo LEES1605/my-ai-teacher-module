@@ -4,7 +4,6 @@
 #        + 페르소나: 🤖Gemini(친절/꼼꼼), 🤖ChatGPT(유머러스/보완)
 #        + 업로드→자동 인덱싱→문법별 소책자(최적화본) Drive 저장 자동화
 #        + 📡 prepared 폴더 변경 감시: 드라이브에 직접 넣어도 자동 최적화(중복 스킵)
-
 from __future__ import annotations
 import os, time, uuid, re, json, io, hashlib
 import pandas as pd
@@ -40,15 +39,16 @@ ss.setdefault("prep_cancel_requested", False)
 ss.setdefault("session_terminated", False)
 ss.setdefault("index_job", None)
 
-# 업로드 후 자동 최적화 파이프라인용 플래그/옵션
+# 업로드/감시 자동 최적화 파이프라인용 플래그/옵션
 ss.setdefault("_auto_booklets_pending", False)
 ss.setdefault("_auto_topics_text", "")
 ss.setdefault("_auto_booklet_title", "Grammar Booklets")
 ss.setdefault("_auto_make_citations", True)
 
-# 폴더 감시 옵션
-ss.setdefault("_watch_on_load", True)   # 페이지 열릴 때 자동 스캔
-ss.setdefault("_watch_rename_title", False)  # 감시 시 AI 제목 자동변경 여부
+# 폴더 감시 옵션(기본 ON)
+ss.setdefault("_watch_on_load", True)           # 페이지 열릴 때 자동 스캔
+ss.setdefault("_watch_ran_once", False)         # 무한 rerun 방지
+ss.setdefault("_watch_rename_title", False)     # 감시 시 AI 제목 정리 여부
 
 # (진단) 하트비트
 st.caption(f"heartbeat ✅ keys={list(ss.keys())[:8]}")
@@ -95,7 +95,6 @@ from src.config import settings
 from src.rag_engine import smoke_test_drive, preview_drive_files, drive_diagnostics
 try:
     ok_sa, head_sa, details_sa = drive_diagnostics(settings.GDRIVE_FOLDER_ID)
-    # ← 삼항식 대신 if/else (헬프 문서 렌더 방지)
     if ok_sa: st.success(head_sa)
     else:     st.warning(head_sa)
     with st.expander("서비스계정 JSON 진단 상세", expanded=not ok_sa):
@@ -203,8 +202,8 @@ def generate_booklets_drive(topics: list[str], booklet_title: str, make_citation
              "and mimeType = 'application/vnd.google-apps.folder' and trashed = false")
         res = drive.files().list(q=q, fields="files(id,name)", pageSize=1,
                                  includeItemsFromAllDrives=True, supportsAllDrives=True).execute()
-        files = res.get("files", [])
-        if files: return files[0]["id"]
+        fs = res.get("files", [])
+        if fs: return fs[0]["id"]
         meta = {"name": name, "parents":[parent_id], "mimeType":"application/vnd.google-apps.folder"}
         f = drive.files().create(body=meta, fields="id").execute(); return f["id"]
     parent_volumes_id = _ensure_child(settings.GDRIVE_FOLDER_ID, "prepared_volumes")
@@ -227,26 +226,130 @@ def generate_booklets_drive(topics: list[str], booklet_title: str, make_citation
         rows.append({"topic": topic, "open": file.get("webViewLink")})
         manifest["items"].append({"topic": topic, "file_id": file["id"], "name": name})
     # overview & manifest
-    ov_lines = [f"# {booklet_title}", "", f"생성시각: {time.strftime('%Y-%m-%d %H:%M:%S')}", ""]
-    for it in manifest["items"]: ov_lines.append(f"- {it['topic']} — {it['name']}")
-    overview_md = "\n".join(ov_lines) + "\n"
-    ov_buf = io.BytesIO(overview_md.encode("utf-8"))
-    ov_meta = {"name": "overview.md", "parents": [set_folder]}
+    ov = [f"# {booklet_title}", "", f"생성시각: {time.strftime('%Y-%m-%d %H:%M:%S')}", ""]
+    for it in manifest["items"]: ov.append(f"- {it['topic']} — {it['name']}")
+    overview_md = "\n".join(ov) + "\n"
     from googleapiclient.http import MediaIoBaseUpload
-    ov_media = MediaIoBaseUpload(ov_buf, mimetype="text/markdown", resumable=False)
-    drive.files().create(body=ov_meta, media_body=ov_media, fields="id").execute()
-    mf_buf = io.BytesIO(json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8"))
-    mf_meta = {"name": "manifest.json", "parents": [set_folder]}
-    mf_media = MediaIoBaseUpload(mf_buf, mimetype="application/json", resumable=False)
-    drive.files().create(body=mf_meta, media_body=mf_media, fields="id").execute()
+    drive.files().create(
+        body={"name": "overview.md", "parents": [set_folder]},
+        media_body=MediaIoBaseUpload(io.BytesIO(overview_md.encode("utf-8")), mimetype="text/markdown", resumable=False),
+        fields="id").execute()
+    drive.files().create(
+        body={"name": "manifest.json", "parents": [set_folder]},
+        media_body=MediaIoBaseUpload(io.BytesIO(json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8")),
+                                     mimetype="application/json", resumable=False),
+        fields="id").execute()
     return {"folder_name": set_name, "folder_id": set_folder, "rows": rows}
+
+# ── prepared 감시 헬퍼(전역: 버튼/자동공통 사용) ────────────────────────────────
+from googleapiclient.discovery import build as _build_gd
+from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
+from src.rag_engine import _normalize_sa
+def _build_sa_drive():
+    creds = _normalize_sa(settings.GDRIVE_SERVICE_ACCOUNT_JSON)
+    return _build_gd("drive","v3",credentials=creds)
+def _find_file(drive, parent_id: str, name: str):
+    q = f"'{parent_id}' in parents and name = '{name}' and trashed = false"
+    res = drive.files().list(q=q, fields="files(id,name,mimeType)", pageSize=1,
+                             includeItemsFromAllDrives=True, supportsAllDrives=True).execute()
+    fs = res.get("files", []); return (fs[0]["id"] if fs else None)
+def _load_manifest(drive):
+    mid = _find_file(drive, settings.GDRIVE_FOLDER_ID, "prepared_manifest.json")
+    data = {"items":{}, "updated_at": _ts()}
+    if mid:
+        req = drive.files().get_media(fileId=mid); buf = io.BytesIO(); MediaIoBaseDownload(buf, req).next_chunk()
+        try: data = json.loads(buf.getvalue().decode("utf-8"))
+        except Exception: pass
+    return mid, data
+def _save_manifest(drive, manifest, file_id=None):
+    body = MediaIoBaseUpload(io.BytesIO(json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8")),
+                             mimetype="application/json", resumable=False)
+    if file_id:
+        drive.files().update(fileId=file_id, media_body=body).execute()
+    else:
+        drive.files().create(body={"name":"prepared_manifest.json","parents":[settings.GDRIVE_FOLDER_ID]},
+                             media_body=body, fields="id").execute()
+def _list_prepared(drive):
+    q = f"'{settings.GDRIVE_FOLDER_ID}' in parents and trashed = false"
+    fields = "files(id,name,mimeType,modifiedTime,md5Checksum,size), nextPageToken"
+    token=None; items=[]
+    while True:
+        res = drive.files().list(q=q, fields=fields, pageSize=1000, pageToken=token,
+                                 includeItemsFromAllDrives=True, supportsAllDrives=True).execute()
+        items.extend(res.get("files", [])); token=res.get("nextPageToken")
+        if not token: break
+    return items
+def _file_sig(drive, meta):
+    """내용 서명: 바이너리는 md5Checksum, Google 문서는 PDF export 후 SHA256"""
+    mt = meta.get("mimeType",""); fid = meta["id"]
+    if not mt.startswith("application/vnd.google-apps/"):
+        if meta.get("md5Checksum"): return f"md5:{meta['md5Checksum']}"
+        req = drive.files().get_media(fileId=fid); buf = io.BytesIO(); MediaIoBaseDownload(buf, req).next_chunk()
+        return "sha256:"+hashlib.sha256(buf.getvalue()).hexdigest()
+    data = drive.files().export(fileId=fid, mimeType="application/pdf").execute()
+    return "sha256:"+hashlib.sha256(data).hexdigest()
+def watch_scan_and_schedule(topics_text: str, title: str, cite: bool, rename_title: bool=False):
+    """prepared/ 스캔 → 신규/변경 감지 → 매니페스트 갱신 → 자동 최적화 예약 → 인덱싱 시작(+rerun)"""
+    drive = _build_sa_drive()
+    mid, manifest = _load_manifest(drive)
+    known = manifest.get("items", {})
+    name_sig_set = {(v.get("name"), v.get("sig")) for v in known.values()}
+    metas = _list_prepared(drive)
+    new_or_changed = []
+    for m in metas:
+        fid, name = m["id"], m.get("name","untitled")
+        if name == "prepared_manifest.json":  # 내부 파일 제외
+            continue
+        try:
+            sig = _file_sig(drive, m)
+        except Exception as e:
+            st.warning(f"시그니처 계산 실패: {name} → {e}"); continue
+        prev = known.get(fid)
+        if prev and prev.get("sig")==sig:
+            continue
+        if (name, sig) in name_sig_set:
+            known[fid] = {"name": name, "sig": sig, "processed_at": prev.get("processed_at") if prev else _ts()}
+            continue
+        new_or_changed.append({"id":fid,"name":name,"sig":sig,"mimeType":m.get("mimeType","")})
+    if not new_or_changed:
+        return False, 0
+
+    # (선택) AI 제목 정리
+    if rename_title:
+        used=set()
+        for it in new_or_changed:
+            fid, old = it["id"], it["name"]
+            ext = ("."+old.rsplit(".",1)[-1]) if "." in old and not old.lower().endswith(".gdoc") else ""
+            new = _safe_name(f"{_ts()}__{_ai_title(old)}{ext}")
+            k=new; n=2
+            while k in used: k=f"{new} ({n})"; n+=1
+            try: _build_sa_drive().files().update(fileId=fid, body={"name":k}).execute()
+            except Exception: pass
+            it["name"]=k; used.add(k)
+
+    # 매니페스트 갱신(미리 기록해 중복 예약 방지)
+    for it in new_or_changed:
+        known[it["id"]] = {"name": it["name"], "sig": it["sig"], "processed_at": None}
+    manifest["items"] = known; manifest["updated_at"] = _ts()
+    _save_manifest(_build_sa_drive(), manifest, mid)
+
+    # 자동 최적화 예약 + 인덱싱 시작
+    ss["_auto_booklets_pending"] = True
+    ss["_auto_topics_text"] = topics_text
+    ss["_auto_booklet_title"] = title
+    ss["_auto_make_citations"] = cite
+    ss.prep_both_done = False; ss.prep_both_running = True; ss.index_job = None
+    st.info(f"prepared/ 신규/변경 {len(new_or_changed)}개 감지 → 인덱싱/최적화 파이프라인 시작")
+    st.rerun()
+    return True, len(new_or_changed)
 
 # ============= 6.5) 📤 관리자: 자료 업로드 (원본→prepared 저장 + 자동 최적화) ===
 with st.expander("📤 관리자: 자료 업로드 (원본→prepared 저장)", expanded=False):
     st.caption("원본은 prepared/에 저장됩니다. (옵션 ON) 업로드 후 자동으로 문법 소책자(최적화본)를 Drive에 저장합니다.")
-    # 옵션
+
     auto_title = st.toggle("AI 제목 자동 생성(업로드 후 이름 바꾸기)", value=True)
     title_hint = st.text_input("제목 힌트(선택)", placeholder="예: 고1 영어 문법 / 학원 교재 / 중간고사 대비 등")
+
     auto_optimize = st.toggle("업로드 후 자동 최적화(문법 소책자 Drive 저장)", value=True)
     default_topics = [
         "Parts of Speech(품사)","Articles(관사)","Nouns & Pronouns(명사/대명사)",
@@ -258,10 +361,11 @@ with st.expander("📤 관리자: 자료 업로드 (원본→prepared 저장)", 
     topics_text = st.text_area("토픽 목록(줄바꿈, 자동 최적화용)", value="\n".join(default_topics), height=150, disabled=not auto_optimize)
     booklet_title = st.text_input("소책자 세트 제목", value="Grammar Booklets", disabled=not auto_optimize)
     make_citations = st.checkbox("소책자에 참고자료(출처) 섹션 포함", value=True, disabled=not auto_optimize)
-    # 입력
+
     SUPPORTED_TYPES = ["pdf","docx","doc","pptx","ppt","md","txt","rtf","odt","html","epub","xlsx","xls","csv"]
     files = st.file_uploader("로컬 파일 선택 (여러 개 가능)", type=SUPPORTED_TYPES, accept_multiple_files=True)
     gdocs_urls = st.text_area("Google Docs/Slides/Sheets URL (줄바꿈으로 여러 개)", height=80)
+
     prog = st.progress(0, text="대기 중…"); status_area = st.empty(); result_area = st.empty()
 
     if st.button("업로드/가져오기 → prepared", type="primary", use_container_width=True):
@@ -270,17 +374,21 @@ with st.expander("📤 관리자: 자료 업로드 (원본→prepared 저장)", 
         from googleapiclient.errors import HttpError
         from src.rag_engine import _normalize_sa
         from src.google_oauth import is_signed_in, build_drive_service
+
         creds_sa = _normalize_sa(settings.GDRIVE_SERVICE_ACCOUNT_JSON)
         drive_sa = build("drive","v3",credentials=creds_sa)
         drive_oauth = build_drive_service() if is_signed_in() else None
+
         created, total = [], 1
         if files: total += len(files)
         url_list = [u.strip() for u in (gdocs_urls.splitlines() if gdocs_urls else []) if u.strip()]
         if url_list: total += len(url_list)
+
         progress_state = {"done": 0, "total": total}
         def _tick(msg: str):
             progress_state["done"] += 1; pct = int(progress_state["done"]/max(progress_state["total"],1)*100)
             prog.progress(pct, text=msg); status_area.info(msg)
+
         try:
             # a) 로컬 파일
             if files:
@@ -295,6 +403,7 @@ with st.expander("📤 관리자: 자료 업로드 (원본→prepared 저장)", 
                     _tick(f"업로드 중: {name}")
                     res = drive_sa.files().create(body=meta, media_body=media, fields="id,webViewLink").execute()
                     created.append({"id":res["id"],"name":name,"link":res.get("webViewLink",""),"ext":ext,"orig_base":base})
+
             # b) Google 문서 링크
             def _parse_gdoc_id(s: str) -> str|None:
                 for pat in [r"/d/([-\w]{15,})", r"[?&]id=([-\w]{15,})$", r"^([-\w]{15,})$"]:
@@ -345,6 +454,7 @@ with st.expander("📤 관리자: 자료 업로드 (원본→prepared 저장)", 
                             status_area.error("복사 실패(권한 부족)"); continue
                     created.append({"id":res3["id"],"name":body["name"],"link":res3.get("webViewLink",""),
                                     "ext":"", "orig_base": name0})
+
             # c) (선택) AI 제목 변경
             renamed_rows = []
             if auto_title and created:
@@ -364,15 +474,19 @@ with st.expander("📤 관리자: 자료 업로드 (원본→prepared 저장)", 
             else:
                 for item in created:
                     renamed_rows.append({"original":item["name"],"renamed_to":"(AI 제목 꺼짐)","open":item["link"]})
+
             # d) 결과표
             prog.progress(100, text="완료"); status_area.success(f"총 {len(created)}개 항목 처리 완료 (prepared)")
             if renamed_rows:
                 df = pd.DataFrame(renamed_rows)
-                result_area.dataframe(df, use_container_width=True, hide_index=True,
+                result_area.dataframe(
+                    df, use_container_width=True, hide_index=True,
                     column_config={"original": st.column_config.TextColumn("원래 파일명"),
                                    "renamed_to": st.column_config.TextColumn("변경 후 파일명"),
-                                   "open": st.column_config.LinkColumn("열기", display_text="열기")})
+                                   "open": st.column_config.LinkColumn("열기", display_text="열기")}
+                )
             st.toast("업로드/가져오기 완료", icon="✅")
+
             # e) 자동 최적화 예약 + 인덱싱 자동 시작
             if auto_optimize:
                 ss["_auto_booklets_pending"] = True
@@ -381,137 +495,24 @@ with st.expander("📤 관리자: 자료 업로드 (원본→prepared 저장)", 
                 ss["_auto_make_citations"] = make_citations
             ss.prep_both_done = False; ss.prep_both_running = True; ss.index_job = None
             st.info("인덱싱/최적화 파이프라인을 시작합니다."); st.rerun()
+
         except Exception as e:
             prog.progress(0, text="오류"); status_area.error(f"처리 실패: {e}")
 
-# ============= 6.6) 📡 prepared 폴더 감시(Drive에 직접 넣어도 자동 최적화) ======
+# ============= 6.6) 📡 prepared 폴더 감시(Drive 직접 투입 → 자동 최적화) ========
 with st.expander("📡 prepared 폴더 감시(Drive 직접 투입 → 최적화/스킵)", expanded=False):
-    st.caption("prepared/ 폴더에 파일을 직접 넣어도 감지하여 자동으로 인덱싱 및 문법 소책자(최적화본)를 생성합니다. "
-               "동일 제목+동일 내용은 자동 스킵합니다. 처리 이력은 prepared_manifest.json에 저장됩니다.")
+    st.caption("prepared/ 에 파일을 직접 넣어도 감지하여 자동으로 인덱싱 및 문법 소책자(최적화본)를 생성합니다. "
+               "동일 제목+동일 내용은 자동 스킵. 처리 이력은 prepared_manifest.json에 저장.")
     ss["_watch_on_load"] = st.toggle("페이지 열릴 때 자동 스캔", value=ss["_watch_on_load"])
     ss["_watch_rename_title"] = st.toggle("감시 시에도 AI 제목 자동 정리(선택)", value=ss["_watch_rename_title"])
+
     topics_watch = st.text_area("토픽 목록(감시용, 줄바꿈)", value=ss.get("_auto_topics_text") or
                                 "Verbs & Tenses(시제)\nPassive(수동태)\nConditionals(조건문)", height=100)
     title_watch = st.text_input("소책자 세트 제목(감시용)", value=ss.get("_auto_booklet_title","Grammar Booklets"))
     cite_watch = st.checkbox("참고자료 섹션 포함", value=ss.get("_auto_make_citations", True))
 
-    # ===== 내부 헬퍼: 매니페스트 로드/저장 + 목록/시그니처 =====
-    from googleapiclient.discovery import build
-    from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
-    from src.rag_engine import _normalize_sa
-    def _build_sa_drive():
-        creds = _normalize_sa(settings.GDRIVE_SERVICE_ACCOUNT_JSON)
-        return build("drive","v3",credentials=creds)
-    def _find_file(drive, parent_id: str, name: str):
-        q = f"'{parent_id}' in parents and name = '{name}' and trashed = false"
-        res = drive.files().list(q=q, fields="files(id,name,mimeType)", pageSize=1,
-                                 includeItemsFromAllDrives=True, supportsAllDrives=True).execute()
-        fs = res.get("files", []); return (fs[0]["id"] if fs else None)
-    def _load_manifest(drive):
-        mid = _find_file(drive, settings.GDRIVE_FOLDER_ID, "prepared_manifest.json")
-        data = {"items":{}, "updated_at": _ts()}
-        if mid:
-            req = drive.files().get_media(fileId=mid); buf = io.BytesIO()
-            MediaIoBaseDownload(buf, req).next_chunk()
-            try: data = json.loads(buf.getvalue().decode("utf-8"))
-            except Exception: pass
-        return mid, data
-    def _save_manifest(drive, manifest, file_id=None):
-        b = io.BytesIO(json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8"))
-        media = MediaIoBaseUpload(b, mimetype="application/json", resumable=False)
-        if file_id:
-            drive.files().update(fileId=file_id, media_body=media).execute()
-        else:
-            meta = {"name":"prepared_manifest.json","parents":[settings.GDRIVE_FOLDER_ID]}
-            drive.files().create(body=meta, media_body=media, fields="id").execute()
-    def _list_prepared(drive):
-        q = f"'{settings.GDRIVE_FOLDER_ID}' in parents and trashed = false"
-        fields = "files(id,name,mimeType,modifiedTime,md5Checksum,size), nextPageToken"
-        pageTok=None; items=[]
-        while True:
-            res = drive.files().list(q=q, fields=fields, pageSize=1000, pageToken=pageTok,
-                                     includeItemsFromAllDrives=True, supportsAllDrives=True).execute()
-            items.extend(res.get("files", [])); pageTok=res.get("nextPageToken")
-            if not pageTok: break
-        return items
-    def _file_sig(drive, meta):
-        """내용 서명: 바이너리는 md5Checksum, Google 문서는 PDF export 후 SHA256"""
-        mt = meta.get("mimeType",""); fid = meta["id"]
-        if not mt.startswith("application/vnd.google-apps/"):
-            if meta.get("md5Checksum"): return f"md5:{meta['md5Checksum']}"
-            # 없는 특수 케이스 → 바이너리 다운로드 후 SHA256
-            req = drive.files().get_media(fileId=fid); buf = io.BytesIO(); downloader = MediaIoBaseDownload(buf, req)
-            done=False
-            while not done:
-                status, done = downloader.next_chunk()
-            return "sha256:"+hashlib.sha256(buf.getvalue()).hexdigest()
-        # Google 문서류 → PDF export 후 SHA256
-        export_mime = "application/pdf"
-        data = drive.files().export(fileId=fid, mimeType=export_mime).execute()
-        return "sha256:"+hashlib.sha256(data).hexdigest()
-
-    def _scan_and_schedule():
-        drive = _build_sa_drive()
-        mid, manifest = _load_manifest(drive)
-        known = manifest.get("items", {})
-        # 이름+시그니처 중복 스킵을 위한 인덱스
-        name_sig_set = {(v.get("name"), v.get("sig")) for v in known.values()}
-        # 목록 조회
-        metas = _list_prepared(drive)
-        new_or_changed = []
-        for m in metas:
-            fid, name = m["id"], m.get("name","untitled")
-            if name == "prepared_manifest.json":  # 내부 파일은 제외
-                continue
-            try:
-                sig = _file_sig(drive, m)
-            except Exception as e:
-                st.warning(f"시그니처 계산 실패: {name} → {e}"); continue
-            prev = known.get(fid)
-            if prev and prev.get("sig")==sig:
-                # 동일 파일 동일 내용 → 스킵
-                continue
-            # 동일 제목+동일 내용 이미 처리한 적 있으면 스킵(중복 업로드 방지)
-            if (name, sig) in name_sig_set:
-                known[fid] = {"name": name, "sig": sig, "processed_at": prev.get("processed_at") if prev else _ts()}
-                continue
-            # 신규/변경
-            new_or_changed.append({"id":fid,"name":name,"sig":sig,"mimeType":m.get("mimeType","")})
-        if not new_or_changed:
-            st.info("새로 처리할 항목이 없습니다. (동일 제목+동일 내용은 자동 스킵)", icon="ℹ️")
-            return False, 0, mid, manifest
-        # 필요 시 제목 정리
-        if ss["_watch_rename_title"]:
-            used=set()
-            for it in new_or_changed:
-                fid, old = it["id"], it["name"]
-                ext = ""
-                if "." in old and not old.lower().endswith(".gdoc"):
-                    ext = "."+old.rsplit(".",1)[-1]
-                new = _safe_name(f"{_ts()}__{_ai_title(old)}{ext}")
-                k=new; n=2
-                while k in used: k=f"{new} ({n})"; n+=1
-                try: 
-                    _build_sa_drive().files().update(fileId=fid, body={"name":k}).execute()
-                    it["name"]=k; used.add(k)
-                except Exception: pass
-        # 매니페스트에 반영(미리 기록)
-        for it in new_or_changed:
-            known[it["id"]] = {"name": it["name"], "sig": it["sig"], "processed_at": None}
-        manifest["items"] = known; manifest["updated_at"] = _ts()
-        _save_manifest(_build_sa_drive(), manifest, mid)
-        # 자동 최적화 예약 + 인덱싱 시작
-        ss["_auto_booklets_pending"] = True
-        ss["_auto_topics_text"] = topics_watch
-        ss["_auto_booklet_title"] = title_watch
-        ss["_auto_make_citations"] = cite_watch
-        ss.prep_both_done = False; ss.prep_both_running = True; ss.index_job = None
-        st.success(f"신규/변경 {len(new_or_changed)}개 감지 → 인덱싱/최적화 파이프라인 시작")
-        st.rerun()
-        return True, len(new_or_changed), mid, manifest
-
     if st.button("📡 지금 스캔 & 최적화", use_container_width=True):
-        _scan_and_schedule()
+        watch_scan_and_schedule(topics_watch, title_watch, cite_watch, ss["_watch_rename_title"])
 
 # ============= 7) 인덱싱 보고서 ================================================
 rep = ss.get("indexing_report")
@@ -659,6 +660,7 @@ with left:
 with right:
     cancel_clicked = st.button("⛔ 준비 취소", key="cancel_prepare", use_container_width=True, type="secondary",
                                disabled=not ss.prep_both_running)
+
 from src.rag_engine import cancel_index_builder
 if cancel_clicked and ss.prep_both_running:
     ss.prep_cancel_requested = True
@@ -667,20 +669,25 @@ if cancel_clicked and ss.prep_both_running:
 if clicked and not (ss.prep_both_running or ss.prep_both_done):
     ss.prep_cancel_requested = False; ss.prep_both_running = True; ss.index_job = None; st.rerun()
 
-# ⏱ 자동 스캔: 페이지 로드시 1회
-if ss["_watch_on_load"] and not ss.prep_both_running and not ss.prep_both_done and not ss.get("_watch_ran_once"):
-    ss["_watch_ran_once"] = True
-    st.session_state["_auto_booklets_pending"] = False  # 중복 방지
-    # 위 감시 섹션의 내부 함수 재사용을 위해 버튼을 누르는 대신 간략하게 플래그만...
-    # 사용자가 직접 '지금 스캔'을 눌러 트리거하는 편이 안전하지만,
-    # 요청에 따라 로드시 자동 스캔은 다음 릴로드에서 함께 동작하도록 구성합니다.
+# ⏱ 자동 스캔: 페이지 로드시 1회(무한 rerun 방지)
+if ss["_watch_on_load"] and not ss["_watch_ran_once"] and not ss.prep_both_running:
+    ss["_watch_ran_once"] = True   # 먼저 True로 세팅하여 rerun 루프 차단
+    topics0 = ss.get("_auto_topics_text") or "Verbs & Tenses(시제)\nPassive(수동태)\nConditionals(조건문)"
+    title0  = ss.get("_auto_booklet_title","Grammar Booklets")
+    cite0   = bool(ss.get("_auto_make_citations", True))
+    try:
+        # 감지되면 내부에서 st.rerun() 호출 → 여기서는 추가 rerun 불필요
+        watch_scan_and_schedule(topics0, title0, cite0, ss["_watch_rename_title"])
+    except Exception as e:
+        # 에러가 떠도 앱이 멈추지 않도록 처리
+        st.warning(f"초기 자동 스캔 실패: {e}")
 
 if ss.prep_both_running:
     run_prepare_both_step()
 
 st.caption("준비 버튼을 다시 활성화하려면 아래 재설정 버튼을 누르세요.")
 if st.button("🔧 재설정(버튼 다시 활성화)", disabled=not ss.prep_both_done):
-    ss.prep_both_done = False; st.rerun()
+    ss.prep_both_done = False; ss["_watch_ran_once"] = False; st.rerun()
 
 # ============= 9) 대화 UI (그룹토론) ===========================================
 st.markdown("---")
@@ -746,16 +753,20 @@ if user_input:
     ss.messages.append({"role":"user","content":user_input})
     with st.chat_message("user"): st.markdown(user_input)
     _jsonl_log([chat_store.make_entry(ss.session_id, "user", "user", user_input, mode, model="user")])
+
     # Gemini 1차
     from src.rag_engine import get_text_answer, llm_complete
     with st.spinner("🤖 Gemini 선생님이 먼저 답합니다…"):
         prev_ctx = _build_context(ss.messages[:-1], limit_pairs=2, max_chars=2000)
         gemini_query = (f"[이전 대화]\n{prev_ctx}\n\n" if prev_ctx else "") + f"[학생 질문]\n{user_input}"
         ans_g = get_text_answer(ss["qe_google"], gemini_query, _persona() + "\n" + GEMINI_STYLE)
+
     content_g = f"**🤖 Gemini**\n\n{ans_g}"
     ss.messages.append({"role":"assistant","content":content_g})
     with st.chat_message("assistant"): st.markdown(content_g)
+
     _jsonl_log([chat_store.make_entry(ss.session_id, "assistant", "Gemini", content_g, mode, model=getattr(settings,"LLM_MODEL","gemini"))])
+
     # ChatGPT 보완(있으면)
     if "qe_openai" in ss:
         review_directive = ("역할: 동료 AI 영어교사\n"
@@ -775,6 +786,7 @@ if user_input:
     else:
         with st.chat_message("assistant"):
             st.info("ChatGPT 키가 없어 Gemini만 응답했습니다. OPENAI_API_KEY를 추가하면 보완/검증이 활성화됩니다.")
+
     # OAuth Markdown 저장(내 드라이브)
     if ss.auto_save_chatlog and ss.messages:
         try:
