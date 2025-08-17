@@ -1,33 +1,34 @@
 # src/rag_engine.py
 from __future__ import annotations
 import os, json, shutil, io, zipfile
-from typing import Callable, Any, Mapping, List, Tuple
+from typing import Callable, Any, Mapping, List, Tuple, Dict
 from datetime import datetime
 try:
-    from zoneinfo import ZoneInfo  # Python 3.9+
+    from zoneinfo import ZoneInfo  # py>=3.9
 except Exception:
     ZoneInfo = None  # 폴백
 
 import streamlit as st
-from src.config import settings
+from src.config import settings, APP_DATA_DIR
 
-# === 인덱스 백업 파일명 규칙 ===================================================
+# ====== 백업 파일명 규칙(날짜 포함) ===========================================
 INDEX_BACKUP_PREFIX = "ai_brain_cache"  # 결과: ai_brain_cache-YYYYMMDD-HHMMSS.zip
 
 def _now_kst_str() -> str:
-    """Asia/Seoul 기준 타임스탬프 문자열."""
     try:
         if ZoneInfo:
             return datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y%m%d-%H%M%S")
     except Exception:
         pass
-    # 폴백: 시스템 로컬 또는 UTC
     return datetime.utcnow().strftime("%Y%m%d-%H%M%S")
 
 def _build_backup_filename(prefix: str = INDEX_BACKUP_PREFIX) -> str:
     return f"{prefix}-{_now_kst_str()}.zip"
 
-# === LLM/Embedding 설정(지연 초기화) ==========================================
+# ====== 체크포인트 경로 ========================================================
+CHECKPOINT_PATH = str((APP_DATA_DIR / "index_checkpoint.json").resolve())
+
+# ====== LLM/Embedding 설정 ====================================================
 def init_llama_settings(api_key: str, llm_model: str, embed_model: str, temperature: float = 0.0):
     from llama_index.core import Settings
     from llama_index.embeddings.google_genai import GoogleGenAIEmbedding
@@ -42,7 +43,7 @@ def init_llama_settings(api_key: str, llm_model: str, embed_model: str, temperat
             st.exception(e)
         st.stop()
 
-# === 인덱스 로딩/빌드 ==========================================================
+# ====== 로컬 저장본 로딩 =======================================================
 @st.cache_resource(show_spinner=False)
 def _load_index_from_disk(persist_dir: str):
     from llama_index.core import StorageContext, load_index_from_storage
@@ -50,11 +51,8 @@ def _load_index_from_disk(persist_dir: str):
     index = load_index_from_storage(storage_context)
     return index
 
-# ── Google Drive service helpers ─────────────────────────────────────────────
+# ====== Google Drive helpers ==================================================
 def _build_drive_service(creds_dict: Mapping[str, Any], write: bool = False):
-    """
-    write=True 이면 업로드/다운로드 가능(Scope: drive), False면 읽기 전용.
-    """
     from google.oauth2 import service_account
     from googleapiclient.discovery import build
     scopes = ["https://www.googleapis.com/auth/drive.readonly"]
@@ -88,9 +86,8 @@ def _fetch_drive_manifest(creds_dict: Mapping[str, Any], folder_id: str) -> dict
         } for f in files
     }
 
-# ── 서비스계정 JSON 정규화/검증 ───────────────────────────────────────────────
+# ====== 서비스계정 정규화/검증 =================================================
 def _normalize_sa(raw_sa: Any | None) -> Mapping[str, Any] | None:
-    """서비스 계정 JSON을 dict로 정규화 (Mapping/AttrDict/문자열/중첩 모두 허용)."""
     if raw_sa is None:
         return None
     if isinstance(raw_sa, Mapping):
@@ -123,7 +120,7 @@ def _validate_sa(creds: Mapping[str, Any] | None) -> Mapping[str, Any]:
         st.stop()
     return creds
 
-# ── 인덱스 ZIP 백업/복원 + 보관정책 ───────────────────────────────────────────
+# ====== ZIP 백업/복원 + 보관정책 =============================================
 def _zip_dir(src_dir: str, zip_path: str) -> None:
     os.makedirs(os.path.dirname(zip_path), exist_ok=True)
     with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
@@ -134,7 +131,6 @@ def _zip_dir(src_dir: str, zip_path: str) -> None:
                 zf.write(full, rel)
 
 def _list_backups(svc, folder_id: str, prefix: str = INDEX_BACKUP_PREFIX) -> List[dict]:
-    """지정 폴더 내 prefix로 시작하는 ZIP 백업 목록(최신순)."""
     q = (
         f"'{folder_id}' in parents and trashed=false and "
         f"mimeType='application/zip' and name contains '{prefix}-'"
@@ -147,9 +143,6 @@ def _list_backups(svc, folder_id: str, prefix: str = INDEX_BACKUP_PREFIX) -> Lis
 
 def prune_old_backups(creds: Mapping[str, Any], folder_id: str, keep: int = 5,
                       prefix: str = INDEX_BACKUP_PREFIX) -> List[Tuple[str, str]]:
-    """
-    최신 keep개만 남기고 나머지 삭제. 반환: [(fileId, name), ...] 삭제된 목록
-    """
     if keep <= 0:
         keep = 1
     svc = _build_drive_service(creds, write=True)
@@ -161,17 +154,11 @@ def prune_old_backups(creds: Mapping[str, Any], folder_id: str, keep: int = 5,
             svc.files().delete(fileId=it["id"]).execute()
             deleted.append((it["id"], it.get("name", "")))
         except Exception:
-            # 실패해도 계속 진행
             pass
     return deleted
 
 def export_brain_to_drive(creds: Mapping[str, Any], persist_dir: str, dest_folder_id: str,
                           filename: str | None = None) -> Tuple[str, str]:
-    """
-    인덱스 폴더(persist_dir)를 ZIP으로 묶어 드라이브에 업로드.
-    filename=None이면 날짜가 포함된 이름으로 자동 생성.
-    반환: (file_id, file_name)
-    """
     if not os.path.exists(persist_dir):
         raise FileNotFoundError("persist_dir가 없습니다. 먼저 두뇌를 생성하세요.")
     fname = filename or _build_backup_filename()
@@ -180,24 +167,18 @@ def export_brain_to_drive(creds: Mapping[str, Any], persist_dir: str, dest_folde
 
     svc = _build_drive_service(creds, write=True)
     from googleapiclient.http import MediaFileUpload
-    file_metadata = {"name": fname, "parents": [dest_folder_id]}
+    meta = {"name": fname, "parents": [dest_folder_id]}
     media = MediaFileUpload(tmp_zip, mimetype="application/zip", resumable=True)
-    created = svc.files().create(
-        body=file_metadata, media_body=media, fields="id,name,parents"
-    ).execute()
+    created = svc.files().create(body=meta, media_body=media, fields="id,name,parents").execute()
     return created["id"], created["name"]
 
 def import_brain_from_drive(creds: Mapping[str, Any], persist_dir: str, src_folder_id: str,
                             prefix: str = INDEX_BACKUP_PREFIX) -> bool:
-    """
-    드라이브에서 prefix로 시작하는 ZIP 중 '최신 1개'를 내려받아 persist_dir로 복원. 성공 시 True.
-    """
     svc = _build_drive_service(creds, write=True)
     items = _list_backups(svc, src_folder_id, prefix)
     if not items:
         return False
     file_id = items[0]["id"]
-
     from googleapiclient.http import MediaIoBaseDownload
     req = svc.files().get_media(fileId=file_id)
     tmp_zip = os.path.join("/tmp", items[0]["name"])
@@ -207,7 +188,6 @@ def import_brain_from_drive(creds: Mapping[str, Any], persist_dir: str, src_fold
         while not done:
             status, done = downloader.next_chunk()
 
-    # 기존 폴더 비우고 압축 해제
     if os.path.exists(persist_dir):
         shutil.rmtree(persist_dir)
     os.makedirs(persist_dir, exist_ok=True)
@@ -216,7 +196,6 @@ def import_brain_from_drive(creds: Mapping[str, Any], persist_dir: str, src_fold
     return True
 
 def try_restore_index_from_drive(creds: Mapping[str, Any], persist_dir: str, folder_id: str) -> bool:
-    """로컬 저장본이 없을 때만 드라이브 백업에서 자동 복원."""
     if os.path.exists(persist_dir):
         return True
     try:
@@ -224,44 +203,116 @@ def try_restore_index_from_drive(creds: Mapping[str, Any], persist_dir: str, fol
     except Exception:
         return False
 
-# ── 인덱스 생성 파이프라인 ───────────────────────────────────────────────────
-def _build_index_with_progress(update_pct: Callable[[int, str | None], None],
-                               update_msg: Callable[[str], None],
-                               gdrive_folder_id: str,
-                               gcp_creds: Mapping[str, Any],
-                               persist_dir: str):
-    """Drive → 문서 로드 → 인덱스 생성 → 디스크 저장"""
-    from llama_index.core import VectorStoreIndex
+# ====== 체크포인트 유틸 =======================================================
+def _load_checkpoint(path: str = CHECKPOINT_PATH) -> Dict[str, Dict]:
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+def _save_checkpoint(data: Dict[str, Dict], path: str = CHECKPOINT_PATH) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2, sort_keys=True)
+
+def _mark_done(cp: Dict[str, Dict], file_id: str, entry: Dict) -> None:
+    cp[file_id] = {
+        "md5": entry.get("md5"),
+        "modifiedTime": entry.get("modifiedTime"),
+        "name": entry.get("name"),
+        "ts": _now_kst_str(),
+    }
+    _save_checkpoint(cp)
+
+def clear_checkpoint(path: str = CHECKPOINT_PATH) -> None:
+    try:
+        if os.path.exists(path):
+            os.remove(path)
+    except Exception:
+        pass
+
+# ====== 인덱스 생성(체크포인트 지원) ==========================================
+def _build_index_with_checkpoint(update_pct: Callable[[int, str | None], None],
+                                 update_msg: Callable[[str], None],
+                                 gdrive_folder_id: str,
+                                 gcp_creds: Mapping[str, Any],
+                                 persist_dir: str,
+                                 remote_manifest: Dict[str, Dict]):
+    """
+    Google Drive 파일을 '파일ID 단위'로 처리 → 각 파일 완주 후 저장 & 체크포인트 기록.
+    재실행 시 이미 완료한 파일(ID+md5 동일)은 건너뜀.
+    """
+    from llama_index.core import VectorStoreIndex, StorageContext, load_index_from_storage
     from llama_index.readers.google import GoogleDriveReader
 
+    # 준비
     update_pct(15, "Drive 리더 초기화")
     loader = GoogleDriveReader(service_account_key=gcp_creds)
 
-    update_pct(30, "문서 목록 불러오는 중")
-    try:
-        documents = loader.load_data(folder_id=gdrive_folder_id)
-    except Exception as e:
-        st.error("Google Drive에서 문서를 불러오는 중 오류가 발생했습니다.")
-        with st.expander("자세한 오류 보기", expanded=True):
-            st.exception(e)
-        st.stop()
+    # 체크포인트/대상 목록 계산
+    cp = _load_checkpoint()
+    todo_ids: List[str] = []
+    for fid, meta in remote_manifest.items():
+        done = cp.get(fid)
+        if done and done.get("md5") and meta.get("md5") and done["md5"] == meta["md5"]:
+            # 동일 md5 → 이미 처리됨
+            continue
+        todo_ids.append(fid)
 
-    if not documents:
-        st.error("강의 자료 폴더가 비었거나 권한 문제입니다. folder_id/공유권한을 확인하세요.")
-        st.stop()
+    total = len(remote_manifest)
+    pending = len(todo_ids)
+    done_cnt = total - pending
+    update_pct(30, f"문서 목록 불러오는 중 • 전체 {total}개, 이번에 처리 {pending}개")
 
-    update_pct(60, f"문서 {len(documents)}개 로드 → 인덱스 생성")
-    try:
-        index = VectorStoreIndex.from_documents(documents, show_progress=True)
-    except Exception as e:
-        st.error("인덱스 생성 중 오류가 발생했습니다.")
-        with st.expander("자세한 오류 보기", expanded=True):
-            st.exception(e)
-        st.stop()
+    # 스토리지 컨텍스트(기존 저장본 있으면 이어쓰기)
+    os.makedirs(persist_dir, exist_ok=True)
+    storage_context = StorageContext.from_defaults(persist_dir=persist_dir)
 
-    update_pct(90, "두뇌 저장 중")
+    # 기존 저장본을 우선 로딩(있다면)
     try:
-        index.storage_context.persist(persist_dir=persist_dir)
+        _ = load_index_from_storage(storage_context)
+    except Exception:
+        pass  # 처음 생성일 수 있음
+
+    if pending == 0:
+        update_pct(95, "변경 없음 → 저장본 그대로 사용")
+        # 기존 저장본만 반환
+        return load_index_from_storage(storage_context)
+
+    # 파일 단위로 이어서 인덱싱
+    for i, fid in enumerate(todo_ids, start=1):
+        meta = remote_manifest.get(fid, {})
+        pretty_name = meta.get("name") or fid
+        update_msg(f"인덱스 생성 • {pretty_name} ({done_cnt + i}/{total})")
+
+        try:
+            # 파일 1개만 로드
+            docs = loader.load_data(file_ids=[fid])
+        except TypeError:
+            # 만약 버전 이슈로 file_ids가 없다면, 폴더 전체를 한 번에 로드하도록 안내
+            st.error("GoogleDriveReader 버전이 오래되어 file_ids 옵션을 지원하지 않습니다. requirements 업데이트가 필요합니다.")
+            st.stop()
+
+        # 해당 문서만 추가 인덱싱(이어쓰기)
+        try:
+            VectorStoreIndex.from_documents(docs, storage_context=storage_context, show_progress=False)
+            # 즉시 저장(부분 진행 보존)
+            storage_context.persist(persist_dir=persist_dir)
+            # 체크포인트 갱신
+            _mark_done(cp, fid, meta)
+        except Exception as e:
+            st.error(f"인덱스 생성 중 오류: {pretty_name}")
+            with st.expander("자세한 오류 보기"):
+                st.exception(e)
+            st.stop()
+
+        pct = 30 + int((i / max(1, pending)) * 60)  # 30→90 사이
+        update_pct(pct, f"문서 {done_cnt + i}/{total} 로드 → 인덱스 생성")
+
+    update_pct(95, "두뇌 저장 중")
+    try:
+        storage_context.persist(persist_dir=persist_dir)
     except Exception as e:
         st.error("인덱스 저장 중 오류가 발생했습니다.")
         with st.expander("자세한 오류 보기", expanded=True):
@@ -269,15 +320,47 @@ def _build_index_with_progress(update_pct: Callable[[int, str | None], None],
         st.stop()
 
     update_pct(100, "완료")
+    # 최종 인덱스 반환
+    from llama_index.core import load_index_from_storage
+    return load_index_from_storage(storage_context)
+
+# (참고) 기존 일괄 빌드 함수는 남겨둠(미사용 시 제거 가능)
+def _build_index_with_progress(update_pct: Callable[[int, str | None], None],
+                               update_msg: Callable[[str], None],
+                               gdrive_folder_id: str,
+                               gcp_creds: Mapping[str, Any],
+                               persist_dir: str):
+    from llama_index.core import VectorStoreIndex
+    from llama_index.readers.google import GoogleDriveReader
+
+    update_pct(15, "Drive 리더 초기화")
+    loader = GoogleDriveReader(service_account_key=gcp_creds)
+
+    update_pct(30, "문서 목록 불러오는 중")
+    documents = loader.load_data(folder_id=gdrive_folder_id)
+    if not documents:
+        st.error("강의 자료 폴더가 비었거나 권한 문제입니다. folder_id/공유권한을 확인하세요.")
+        st.stop()
+
+    update_pct(60, f"문서 {len(documents)}개 로드 → 인덱스 생성")
+    index = VectorStoreIndex.from_documents(documents, show_progress=True)
+
+    update_pct(90, "두뇌 저장 중")
+    index.storage_context.persist(persist_dir=persist_dir)
+    update_pct(100, "완료")
     return index
 
+# ====== 변경 감지 → 인덱스 준비(체크포인트 포함) ==============================
 def get_or_build_index(update_pct: Callable[[int, str | None], None],
                        update_msg: Callable[[str], None],
                        gdrive_folder_id: str,
                        raw_sa: Any | None,
                        persist_dir: str,
                        manifest_path: str):
-    """Drive 변경을 감지해 저장본을 쓰거나, 변경 시에만 재인덱싱."""
+    """
+    Drive 변경을 감지해 저장본을 쓰거나, 변경 시에만 재인덱싱.
+    재인덱싱은 '파일 단위 체크포인트'를 사용하여 중간 재개를 지원.
+    """
     update_pct(5, "드라이브 변경 확인 중…")
     gcp_creds = _validate_sa(_normalize_sa(raw_sa))
 
@@ -305,6 +388,7 @@ def get_or_build_index(update_pct: Callable[[int, str | None], None],
                 return True
         return False
 
+    # 변경 없음 → 저장본 바로 로드
     if os.path.exists(persist_dir) and not _manifests_differ(local, remote):
         update_pct(25, "변경 없음 → 저장된 두뇌 로딩")
         from llama_index.core import StorageContext, load_index_from_storage
@@ -313,21 +397,21 @@ def get_or_build_index(update_pct: Callable[[int, str | None], None],
         update_pct(100, "완료!")
         return idx
 
-    if os.path.exists(persist_dir):
-        shutil.rmtree(persist_dir)
+    # 변경 있음 → 체크포인트 이어서 빌드
+    update_pct(40, "변경 감지 → 문서 로드/인덱스 생성 (체크포인트 사용)")
+    idx = _build_index_with_checkpoint(update_pct, update_msg, gdrive_folder_id, gcp_creds, persist_dir, remote)
 
-    update_pct(40, "변경 감지 → 문서 로드/인덱스 생성")
-    idx = _build_index_with_progress(update_pct, update_msg, gdrive_folder_id, gcp_creds, persist_dir)
-
-    # 새 매니페스트 저장
+    # 새 매니페스트 저장 & 체크포인트 정리
     os.makedirs(os.path.dirname(manifest_path), exist_ok=True)
     with open(manifest_path, "w", encoding="utf-8") as fp:
         json.dump(remote, fp, ensure_ascii=False, indent=2, sort_keys=True)
+    # 모든 파일 완료했으니 체크포인트 비우기
+    clear_checkpoint()
 
     update_pct(100, "완료!")
     return idx
 
-# === QA 유틸 ==================================================================
+# ====== QA 유틸 ===============================================================
 def get_text_answer(query_engine, question: str, system_prompt: str) -> str:
     try:
         full_query = (
