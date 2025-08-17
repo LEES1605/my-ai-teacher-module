@@ -466,11 +466,11 @@ with st.expander("📤 관리자: 자료 업로드 (원본→prepared 저장)", 
             status_area.error(f"처리 실패: {e}")
 # ==============================================================================
 
-# ============= 6.7) 📚 문법서 토픽별 소책자 생성(가상 권) =======================
-with st.expander("📚 문법서 토픽별 소책자 생성(가상 권)", expanded=False):
+# ============= 6.7) 📚 문법서 토픽별 소책자 생성(Drive 저장) =====================
+with st.expander("📚 문법서 토픽별 소책자 생성(Drive 저장)", expanded=False):
     st.caption(
-        "원본은 prepared/에 그대로 두고, 인덱싱된 내용을 문법 토픽별로 재구성하여 "
-        "마크다운 소책자(.md)로 Drive에 저장합니다. (중복 인덱싱 방지)"
+        "원본은 prepared/에 그대로 두고, 문법 토픽별 최적화된 소책자(.md)를 "
+        "prepared_volumes/ 하위 폴더에 저장합니다. overview.md와 manifest.json도 함께 생성합니다."
     )
 
     default_topics = [
@@ -486,78 +486,109 @@ with st.expander("📚 문법서 토픽별 소책자 생성(가상 권)", expand
         value="\n".join(default_topics), height=200
     )
     booklet_title = st.text_input("소책자 세트 제목(폴더명)", value="Grammar Booklets")
-    make_citations = st.toggle("답변에 근거(참고 자료) 섹션 포함", value=True,
-                               help="원전 기반 RAG 요약 하단에 참고 자료 파일명을 붙입니다.")
-    start_btn = st.button("토픽별 소책자 생성 → Drive 저장", type="primary")
+    make_citations = st.toggle("소책자 하단에 ‘참고 자료(출처)’ 포함", value=True)
+    start_btn = st.button("토픽별 소책자 생성 → Drive 저장", type="primary", use_container_width=True)
 
     if start_btn:
         if "qe_google" not in ss:
             st.warning("먼저 상단의 [🚀 한 번에 준비하기]로 인덱스를 준비하세요.")
         else:
+            import re, json, time, io
+            import pandas as pd
             from googleapiclient.discovery import build
             from googleapiclient.http import MediaIoBaseUpload
             from src.rag_engine import _normalize_sa, get_text_answer
             from src.config import settings
-            import io, time, re
 
             def _ts(): return time.strftime("%Y%m%d_%H%M%S")
             def _safe(s: str) -> str:
                 s = re.sub(r'[\\/:*?"<>|]+', " ", str(s))
                 s = re.sub(r"\s+", " ", s).strip()
-                return s[:60] or "untitled"
+                return s[:120] or "untitled"
 
-            # 1) Drive 준비: prepared_volumes/<세트제목_타임스탬프>/ 폴더 생성
+            # 1) Drive 준비: prepared_volumes/<세트명_타임스탬프>/ 생성
             creds = _normalize_sa(settings.GDRIVE_SERVICE_ACCOUNT_JSON)
             drive = build("drive", "v3", credentials=creds)
 
             def _ensure_child(parent_id: str, name: str) -> str:
-                q = f"'{parent_id}' in parents and name = '{name}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
-                res = drive.files().list(q=q, fields="files(id,name)", pageSize=1, includeItemsFromAllDrives=True, supportsAllDrives=True).execute()
+                q = (
+                    f"'{parent_id}' in parents and name = '{name}' "
+                    "and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
+                )
+                res = drive.files().list(
+                    q=q, fields="files(id,name)", pageSize=1,
+                    includeItemsFromAllDrives=True, supportsAllDrives=True
+                ).execute()
                 files = res.get("files", [])
-                if files: return files[0]["id"]
+                if files: 
+                    return files[0]["id"]
                 meta = {"name": name, "parents":[parent_id], "mimeType": "application/vnd.google-apps.folder"}
                 f = drive.files().create(body=meta, fields="id").execute()
                 return f["id"]
 
             parent_volumes_id = _ensure_child(settings.GDRIVE_FOLDER_ID, "prepared_volumes")
-            set_folder = _ensure_child(parent_volumes_id, f"{_safe(booklet_title)}_{_ts()}")
+            set_name = f"{_safe(booklet_title)}_{_ts()}"
+            set_folder = _ensure_child(parent_volumes_id, set_name)
 
+            # 2) 토픽별 생성
             topics = [t.strip() for t in topics_text.splitlines() if t.strip()]
             prog = st.progress(0, text="생성 중…")
-            table_rows = []
-            for i, topic in enumerate(topics, start=1):
-                # 2) 토픽별 “원전 기반 요약” 생성
-                prompt = (
-                    "당신은 영어 문법 교사입니다. 아래 토픽을 학생용 소책자 형태로 정리하세요.\n"
-                    "규칙:\n"
-                    f"• 토픽: {topic}\n"
-                    "• 핵심 개념을 한국어로 설명하되, 영문 규칙/형태는 혼용\n"
-                    "• 예문 3~5개 (쉬운→중간 난이도 순), 한-영 병기\n"
-                    "• 자주 하는 실수/오개념 3개 정리\n"
-                    "• 미니 연습문제 5문항(+해설)\n"
-                    "• 길이는 500~900자 내외\n"
-                    + ("• 마지막에 ‘---\\n*참고 자료: …’로 출처 파일명을 나열\n" if make_citations else "")
-                )
-                booklet_md = get_text_answer(
-                    ss["qe_google"],
-                    f"[토픽]\n{topic}\n\n[과제]\n위 규칙에 따라 학생용 소책자 마크다운을 작성",
-                    prompt,
-                )
+            table_rows, manifest = [], {"title": booklet_title, "created_at": _ts(), "items": []}
 
-                # 3) Drive에 마크다운 저장
+            for i, topic in enumerate(topics, start=1):
+                # 프롬프트(원전 기반 요약)
+                guide = (
+                    "당신은 영어 문법 교사입니다. 아래 토픽을 학생용 소책자 형태로 정리하세요.\n"
+                    f"• 토픽: {topic}\n"
+                    "• 핵심 개념을 한국어로, 규칙/형태는 영문 혼용\n"
+                    "• 예문 3~5개 (쉬운→중간 난이도), 한-영 병기\n"
+                    "• 자주 하는 실수/오개념 3개 정리\n"
+                    "• 미니 연습문제 5문항(+정답/해설)\n"
+                    "• 분량 500~900자 내외\n"
+                )
+                if make_citations:
+                    guide += "• 마지막에 ‘---\\n*참고 자료: 파일명 …’ 섹션 포함\n"
+
+                # 생성
+                md = get_text_answer(
+                    ss["qe_google"],
+                    f"[토픽]\n{topic}\n\n[과제]\n위 가이드를 따르되, 학생용 마크다운으로 작성",
+                    guide,
+                )
                 name = f"{_safe(topic)}.md"
-                buf = io.BytesIO(booklet_md.encode("utf-8"))
+
+                # Drive에 업로드
+                buf = io.BytesIO(md.encode("utf-8"))
                 media = MediaIoBaseUpload(buf, mimetype="text/markdown", resumable=False)
                 meta = {"name": name, "parents": [set_folder]}
                 file = drive.files().create(body=meta, media_body=media, fields="id,webViewLink").execute()
+
                 table_rows.append({"topic": topic, "open": file.get("webViewLink")})
+                manifest["items"].append({"topic": topic, "file_id": file["id"], "name": name})
 
                 prog.progress(int(i/len(topics)*100), text=f"[{i}/{len(topics)}] {topic}")
 
+            # 3) overview.md & manifest.json 저장
+            overview_lines = [f"# {booklet_title}", "", f"생성시각: {time.strftime('%Y-%m-%d %H:%M:%S')} (KST)", ""]
+            for it in manifest["items"]:
+                overview_lines.append(f"- {it['topic']} — {it['name']}")
+            overview_md = "\n".join(overview_lines) + "\n"
+
+            # overview
+            ov_buf = io.BytesIO(overview_md.encode("utf-8"))
+            ov_meta = {"name": "overview.md", "parents": [set_folder]}
+            ov_media = MediaIoBaseUpload(ov_buf, mimetype="text/markdown", resumable=False)
+            ov_file = drive.files().create(body=ov_meta, media_body=ov_media, fields="id,webViewLink").execute()
+
+            # manifest
+            mf_buf = io.BytesIO(json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8"))
+            mf_meta = {"name": "manifest.json", "parents": [set_folder]}
+            mf_media = MediaIoBaseUpload(mf_buf, mimetype="application/json", resumable=False)
+            mf_file = drive.files().create(body=mf_meta, media_body=mf_media, fields="id,webViewLink").execute()
+
             prog.progress(100, text="완료")
-            st.success(f"총 {len(table_rows)}개 소책자 생성 완료 → 폴더: prepared_volumes/{_safe(booklet_title)}_*")
+            st.success(f"총 {len(table_rows)}개 소책자 생성 → 폴더: prepared_volumes/{set_name}")
             if table_rows:
-                import pandas as pd
                 st.dataframe(
                     pd.DataFrame(table_rows),
                     use_container_width=True, hide_index=True,
@@ -566,8 +597,8 @@ with st.expander("📚 문법서 토픽별 소책자 생성(가상 권)", expand
                         "open": st.column_config.LinkColumn("열기", display_text="열기")
                     }
                 )
-            # 인덱싱은 원본만 대상으로 유지하므로 재인덱싱은 불필요(중복 방지)
-# ==============================================================================
+            st.toast("Drive 저장 완료 — 원본은 prepared/ 유지, 소책자는 prepared_volumes/ 보관", icon="✅")
+# ===============================================================================
 
 # ============= 7) 인덱싱 보고서(스킵된 파일 포함) ===============================
 rep = ss.get("indexing_report")
