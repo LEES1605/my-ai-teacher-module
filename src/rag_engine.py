@@ -12,6 +12,23 @@ from typing import Any, Callable, Iterable, Mapping, Optional
 import streamlit as st
 from src.config import settings
 
+# 파일 상단 import 근처
+from llama_index.core import Settings
+from llama_index.core.node_parser import SentenceSplitter
+
+# 모듈 로드 시 한 번만 기본 분할기 지정 (수능 지문에 맞게)
+def _configure_index_defaults():
+    # 토큰 기준이지만 대략 영문 600~900단어, 한글 800~1200자 정도가 한 청크
+    Settings.node_parser = SentenceSplitter(chunk_size=800, chunk_overlap=120)
+    # 답변 최대 토큰(과도한 출력 방지)
+    try:
+        Settings.num_output = 512
+    except Exception:
+        pass
+
+# 모듈 import 시 적용
+_configure_index_defaults()
+
 # ================================ 예외 ================================
 class CancelledError(Exception):
     """사용자 취소를 나타내는 예외"""
