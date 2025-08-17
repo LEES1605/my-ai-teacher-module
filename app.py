@@ -73,7 +73,25 @@ with st.sidebar:
 st.markdown("## 🔗 Google Drive 연결 테스트")
 st.caption("서비스계정 저장은 공유드라이브 Writer 권한이 필요. 인덱싱은 Readonly면 충분합니다.")
 try:
-    from src.rag_engine import smoke_test_drive, preview_drive_files
+    # ── replace this block inside app.py (Google Drive 연결 테스트 카드) ──
+from src.rag_engine import drive_diagnostics
+
+st.markdown("## 🔗 Google Drive 연결 테스트")
+st.caption("서비스계정은 **공유/내 드라이브** 중 접근하는 폴더에 대해 '보기' 이상 권한이 필요합니다. 인덱싱은 Readonly면 충분.")
+
+ok, headline, details = drive_diagnostics(settings.GDRIVE_FOLDER_ID)
+if ok:
+    st.success(headline)
+else:
+    st.error(headline)
+
+with st.expander("🔎 연결/권한 진단 상세", expanded=not ok):
+    for line in details:
+        st.write("• ", line)
+
+# (원하시면 '폴더 파일 미리보기' 버튼은 기존 코드 유지)
+# ─────────────────────────────────────────────────────────────────
+
 except Exception:
     st.error("`src.rag_engine` 임포트 실패")
     import traceback, os as _os
