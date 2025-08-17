@@ -51,16 +51,24 @@ def _auto_backup_flag() -> bool:
         else getattr(settings, "AUTO_BACKUP_ON_SUCCESS", True)
     )
 
-def _has_sa_json() -> bool:
-    val = getattr(settings, "GDRIVE_SERVICE_ACCOUNT_JSON", "") or ""
-    return bool(str(val).strip())
-
 def clamp(v, lo, hi) -> int:
     try:
         v = int(v)
     except Exception:
         v = lo
     return max(lo, min(hi, v))
+
+def _has_sa_any() -> bool:
+    """Secrets.JSON 또는 email/private_key 두 가지 방식 중 하나라도 있으면 True"""
+    def _g(k: str):
+        try:
+            return st.secrets.get(k, None)
+        except Exception:
+            return None
+    j = str(getattr(settings, "GDRIVE_SERVICE_ACCOUNT_JSON", "") or "").strip()
+    email = os.environ.get("APP_SA_CLIENT_EMAIL") or _g("APP_SA_CLIENT_EMAIL")
+    pkey  = os.environ.get("APP_SA_PRIVATE_KEY")  or _g("APP_SA_PRIVATE_KEY")
+    return bool(j) or (bool(email) and bool(pkey))
 
 # ---- inline stepper/progress CSS --------------------------------------------
 def ensure_progress_css():
@@ -123,6 +131,7 @@ load_css(
 ensure_progress_css()
 safe_render_header()
 
+# 우측 상단 관리자 아이콘
 _, _, c3 = st.columns([0.8, 0.1, 0.1])
 with c3:
     if st.button("🛠️", key="admin_icon_top_bar"):
@@ -131,24 +140,18 @@ with c3:
 # ===== Admin auth & diag banner ==============================================
 is_admin = admin_login_flow(getattr(settings, "ADMIN_PASSWORD", ""))
 
-def _has_sa_any() -> bool:
-    def _g(k: str):
-        try:
-            return st.secrets.get(k, None)
-        except Exception:
-            return None
-    j = str(getattr(settings, "GDRIVE_SERVICE_ACCOUNT_JSON", "") or "").strip()
-    email = os.environ.get("APP_SA_CLIENT_EMAIL") or _g("APP_SA_CLIENT_EMAIL")
-    pkey  = os.environ.get("APP_SA_PRIVATE_KEY")  or _g("APP_SA_PRIVATE_KEY")
-    return bool(j) or (bool(email) and bool(pkey))
-
 if is_admin and not _has_sa_any():
     st.error("GDRIVE 서비스계정 자격증명이 비었습니다. Secrets에 JSON 또는 이메일/프라이빗키를 입력해 주세요.")
     st.caption("APP_GDRIVE_SERVICE_ACCOUNT_JSON 또는 APP_SA_CLIENT_EMAIL / APP_SA_PRIVATE_KEY 를 사용할 수 있어요.")
 
 # ===== Auto attach/restore ====================================================
 def _auto_attach_or_restore_silently() -> bool:
+    """로컬 저장본 연결 → 없으면 드라이브 백업 자동 복원 → 쿼리엔진 생성.
+       중지 직후에는 자동 연결을 억제(suppress_auto_attach)합니다."""
     try:
+        if st.session_state.get("suppress_auto_attach"):
+            return False
+
         if os.path.exists(PERSIST_DIR):
             init_llama_settings(
                 api_key=_secret_or_str(settings.GEMINI_API_KEY),
@@ -251,7 +254,7 @@ if is_admin:
             st.session_state["response_mode"] = str(mode_sel)
             st.success("RAG/LLM 설정이 저장되었습니다. (다음 쿼리부터 반영)")
 
-    # ✅ 여기 수정됨: 기본값을 범위로 보정 + 최소값 완화
+    # 최적화 설정
     with st.expander("🧩 최적화 설정(전처리/청킹/중복제거)", expanded=True):
         c1, c2, c3 = st.columns(3)
         with c1:
@@ -259,12 +262,10 @@ if is_admin:
             st.session_state.setdefault("opt_chunk_overlap", settings.CHUNK_OVERLAP)
             st.session_state.setdefault("opt_min_chars", settings.MIN_CHARS_PER_DOC)
 
-            # 범위 정의
             cs_min, cs_max = 200, 2000
             co_min, co_max = 0, 400
-            mc_min, mc_max = 50, 3000   # (기본 80도 허용되도록 50부터 시작)
+            mc_min, mc_max = 50, 3000   # 80 같은 값도 허용되도록 50부터
 
-            # 기본값 보정(clamp)
             cs_def = clamp(st.session_state["opt_chunk_size"], cs_min, cs_max)
             co_def = clamp(st.session_state["opt_chunk_overlap"], co_min, co_max)
             mc_def = clamp(st.session_state["opt_min_chars"], mc_min, mc_max)
@@ -291,18 +292,23 @@ if is_admin:
             st.session_state["opt_pre_summarize"] = bool(psu)
             st.success("최적화 설정이 저장되었습니다. 다음 인덱싱부터 적용됩니다.")
 
+    # 관리 도구
     with st.expander("🛠️ 관리자 도구", expanded=False):
         c1, c2, c3 = st.columns(3)
         with c1:
             if st.button("📥 강의 자료 다시 불러오기 (두뇌 초기화)"):
                 import shutil
+                # 완전 초기화
                 if os.path.exists(PERSIST_DIR):
                     shutil.rmtree(PERSIST_DIR)
                 for p in (CHECKPOINT_PATH, MANIFEST_PATH, QUALITY_REPORT_PATH):
                     try:
-                        if os.path.exists(p): os.remove(p)
+                        if os.path.exists(p):
+                            os.remove(p)
                     except Exception:
                         pass
+                # 자동 재부착 방지 + 쿼리엔진 제거
+                st.session_state["suppress_auto_attach"] = True
                 if "query_engine" in st.session_state:
                     del st.session_state["query_engine"]
                 st.success("두뇌 파일이 초기화되었습니다. 아래에서 다시 준비하세요.")
@@ -342,120 +348,195 @@ if is_admin:
         st.write(f"• 체크포인트: `{CHECKPOINT_PATH}` → {'존재' if os.path.exists(CHECKPOINT_PATH) else '없음'}")
         render_quality_report_view()
 
+# ===== Build workflow (with Resume/Stop) =====================================
+def run_build_workflow(*, fresh: bool):
+    """한 번의 인덱싱(체크포인트/중지 지원) 실행 루틴."""
+    stepper_slot = st.empty(); bar_slot = st.empty(); msg_slot = st.empty(); ctrl_slot = st.empty()
+
+    steps = [
+        ("check","드라이브 변경 확인"),
+        ("init","Drive 리더 초기화"),
+        ("list","문서 목록 불러오는 중"),
+        ("index","인덱스 생성"),
+        ("save","두뇌 저장"),
+    ]
+    key_to_idx = {k: i for i, (k, _) in enumerate(steps)}
+    st.session_state["_step_status"] = {k: "pending" for k, _ in steps}
+    st.session_state["_step_max"] = -1  # 회귀 방지 핵심
+
+    def _goto(key: str):
+        idx = key_to_idx[key]
+        if idx < st.session_state["_step_max"]:
+            return
+        st.session_state["_step_max"] = idx
+        for j, (kj, _) in enumerate(steps):
+            st.session_state["_step_status"][kj] = "done" if j < idx else ("active" if j == idx else "pending")
+        render_stepper(stepper_slot, steps, st.session_state["_step_status"], sticky=True)
+
+    def _complete_all():
+        for k, _ in steps:
+            st.session_state["_step_status"][k] = "done"
+        st.session_state["_step_max"] = len(steps) - 1
+        render_stepper(stepper_slot, steps, st.session_state["_step_status"], sticky=True)
+
+    _goto("check")
+    render_progress(bar_slot, 0)
+    msg_slot.markdown("<div class='gp-msg'>두뇌 준비를 시작합니다…</div>", unsafe_allow_html=True)
+
+    # 중지 버튼
+    st.session_state["stop_requested"] = False
+    with ctrl_slot.container():
+        st.caption("진행 제어")
+        if st.button("🛑 학습 중지", type="secondary"):
+            st.session_state["stop_requested"] = True
+            st.info("중지 요청됨 — 현재 파일까지 마무리하고 곧 멈춥니다.")
+
+    # 진행 콜백
+    st.session_state["_gp_pct"] = 0
+    def update_pct(pct: int, msg: str | None = None):
+        st.session_state["_gp_pct"] = max(0, min(100, int(pct)))
+        render_progress(bar_slot, st.session_state["_gp_pct"])
+        if msg is not None:
+            update_msg(msg)
+
+    def update_msg(text: str):
+        if "변경 확인" in text: _goto("check")
+        elif "리더 초기화" in text: _goto("init")
+        elif "목록 불러오는 중" in text: _goto("list")
+        elif "인덱스 생성" in text: _goto("index")
+        elif "저장 중" in text: _goto("save")
+        elif "완료" in text: _complete_all()
+        msg_slot.markdown(f"<div class='gp-msg'>{text}</div>", unsafe_allow_html=True)
+
+    def should_stop() -> bool:
+        return bool(st.session_state.get("stop_requested", False))
+
+    # Fresh 요청 시, 자동 재부착 방지 및 이전 엔진 제거
+    if fresh:
+        st.session_state["suppress_auto_attach"] = True
+        if "query_engine" in st.session_state:
+            del st.session_state["query_engine"]
+
+    # 1) LLM/Embedding 초기화
+    init_llama_settings(
+        api_key=_secret_or_str(settings.GEMINI_API_KEY),
+        llm_model=settings.LLM_MODEL,
+        embed_model=settings.EMBED_MODEL,
+        temperature=float(st.session_state.get("temperature", 0.0)),
+    )
+
+    # 2) 인덱스 준비/빌드(체크포인트 + 중지 신호)
+    index = get_or_build_index(
+        update_pct=update_pct,
+        update_msg=update_msg,
+        gdrive_folder_id=settings.GDRIVE_FOLDER_ID,
+        raw_sa=settings.GDRIVE_SERVICE_ACCOUNT_JSON,
+        persist_dir=PERSIST_DIR,
+        manifest_path=MANIFEST_PATH,
+        should_stop=should_stop,
+    )
+
+    # 3) 중지 여부에 따라 연결/보류
+    if st.session_state.get("stop_requested"):
+        # 챗창으로 넘어가지 않도록 엔진 미연결 + 자동재연결 억제
+        st.session_state["suppress_auto_attach"] = True
+        if "query_engine" in st.session_state:
+            del st.session_state["query_engine"]
+        st.warning("학습을 중지했습니다. 다음 실행 시 **중단 지점 다음 파일부터** 이어서 학습합니다.")
+    else:
+        # 쿼리 엔진 연결
+        st.session_state.query_engine = index.as_query_engine(
+            response_mode=st.session_state.get("response_mode", settings.RESPONSE_MODE),
+            similarity_top_k=int(st.session_state.get("similarity_top_k", _default_top_k())),
+        )
+        update_pct(100, "완료!")
+        time.sleep(0.4)
+
+        # 4) 자동 백업(+오래된 백업 정리)
+        if _auto_backup_flag():
+            try:
+                creds = _validate_sa(_normalize_sa(settings.GDRIVE_SERVICE_ACCOUNT_JSON))
+                dest = getattr(settings, "BACKUP_FOLDER_ID", None) or settings.GDRIVE_FOLDER_ID
+                with st.spinner("⬆️ 인덱스 저장본을 드라이브로 자동 백업 중..."):
+                    _, file_name = export_brain_to_drive(creds, PERSIST_DIR, dest, filename=None)
+                st.success(f"자동 백업 완료! 파일명: {file_name}")
+                deleted = prune_old_backups(
+                    creds, dest,
+                    keep=int(getattr(settings, "BACKUP_KEEP_N", 5)),
+                    prefix=INDEX_BACKUP_PREFIX,
+                )
+                if deleted:
+                    st.info(f"오래된 백업 {len(deleted)}개 정리 완료.")
+            except Exception as e:
+                st.warning("자동 백업에 실패했지만, 로컬 저장본은 정상적으로 준비되었습니다.")
+                with st.expander("백업 오류 보기"):
+                    st.exception(e)
+
+    # 진행 UI 정리 및 재실행
+    stepper_slot.empty(); bar_slot.empty(); msg_slot.empty(); ctrl_slot.empty()
+    st.rerun()
+
 # ===== Main workflow ==========================================================
 def main():
+    # 준비 끝나면 채팅
     if "query_engine" in st.session_state:
-        render_chat_ui(); return
+        render_chat_ui()
+        return
 
+    # 관리자 준비 영역
     if is_admin:
-        st.info("AI 교사를 시작하려면 아래 버튼을 눌러주세요. (체크포인트/중지 버튼 지원)")
+        st.info("AI 교사를 시작하려면 아래 버튼을 눌러주세요. (중간중지/재개(Resume) 지원)")
 
-        if st.button("🧠 AI 두뇌 준비 시작하기"):
-            stepper_slot = st.empty(); bar_slot = st.empty(); msg_slot = st.empty(); ctrl_slot = st.empty()
-            steps = [("check","드라이브 변경 확인"),("init","Drive 리더 초기화"),
-                     ("list","문서 목록 불러오는 중"),("index","인덱스 생성"),("save","두뇌 저장")]
-            st.session_state["_step_status"] = {k:"pending" for k,_ in steps}; st.session_state["_step_curr"] = None
+        has_ckpt = os.path.exists(CHECKPOINT_PATH)
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("🧠 처음부터 준비 시작"):
+                run_build_workflow(fresh=True)
+                return
+        with col2:
+            if st.button("⏯️ 중단 지점부터 재개", disabled=not has_ckpt):
+                run_build_workflow(fresh=False)
+                return
 
-            def _set_active(key:str):
-                prev = st.session_state.get("_step_curr")
-                if prev and st.session_state["_step_status"].get(prev)=="active":
-                    st.session_state["_step_status"][prev] = "done"
-                st.session_state["_step_status"][key] = "active"; st.session_state["_step_curr"] = key
-                render_stepper(stepper_slot, steps, st.session_state["_step_status"], sticky=True)
+        if has_ckpt:
+            st.caption("🔁 이전 학습의 체크포인트가 발견되었습니다. '중단 지점부터 재개' 버튼을 사용할 수 있어요.")
+        else:
+            st.caption("체크포인트가 아직 없습니다. '처음부터 준비 시작' 버튼으로 학습을 시작하세요.")
+        return
 
-            def _set_done_all():
-                for k,_ in steps: st.session_state["_step_status"][k] = "done"
-                render_stepper(stepper_slot, steps, st.session_state["_step_status"], sticky=True)
-
-            _set_active("check"); render_progress(bar_slot, 0)
-            msg_slot.markdown("<div class='gp-msg'>두뇌 준비를 시작합니다…</div>", unsafe_allow_html=True)
-
-            st.session_state["stop_requested"] = False
-            with ctrl_slot.container():
-                st.caption("진행 제어")
-                if st.button("🛑 학습 중지", type="secondary"):
-                    st.session_state["stop_requested"] = True
-                    st.info("중지 요청됨 — 현재 파일까지 마무리하고 곧 멈춥니다.")
-
-            st.session_state["_gp_pct"] = 0
-            def update_pct(pct:int, msg:str|None=None):
-                st.session_state["_gp_pct"] = max(0, min(100, int(pct)))
-                render_progress(bar_slot, st.session_state["_gp_pct"])
-                if msg is not None: update_msg(msg)
-
-            def update_msg(text:str):
-                if "변경 확인" in text: _set_active("check")
-                elif "리더 초기화" in text: _set_active("init")
-                elif "목록 불러오는 중" in text: _set_active("list")
-                elif "인덱스 생성" in text: _set_active("index")
-                elif "저장 중" in text: _set_active("save")
-                elif "완료" in text: _set_done_all()
-                msg_slot.markdown(f"<div class='gp-msg'>{text}</div>", unsafe_allow_html=True)
-
-            def should_stop() -> bool:
-                return bool(st.session_state.get("stop_requested", False))
-
-            init_llama_settings(
-                api_key=_secret_or_str(settings.GEMINI_API_KEY),
-                llm_model=settings.LLM_MODEL,
-                embed_model=settings.EMBED_MODEL,
-                temperature=float(st.session_state.get("temperature", 0.0)),
-            )
-            index = get_or_build_index(
-                update_pct=update_pct, update_msg=update_msg,
-                gdrive_folder_id=settings.GDRIVE_FOLDER_ID,
-                raw_sa=settings.GDRIVE_SERVICE_ACCOUNT_JSON,
-                persist_dir=PERSIST_DIR, manifest_path=MANIFEST_PATH,
-                should_stop=should_stop
-            )
-            st.session_state.query_engine = index.as_query_engine(
-                response_mode=st.session_state.get("response_mode", settings.RESPONSE_MODE),
-                similarity_top_k=int(st.session_state.get("similarity_top_k", _default_top_k())),
-            )
-
-            if st.session_state.get("stop_requested"):
-                st.warning("학습을 중지했습니다. 다음 실행 시 **중단 지점 다음 파일부터** 이어서 학습합니다.")
-            else:
-                update_pct(100, "완료!"); time.sleep(0.4)
-
-            if _auto_backup_flag() and not st.session_state.get("stop_requested"):
-                try:
-                    creds = _validate_sa(_normalize_sa(settings.GDRIVE_SERVICE_ACCOUNT_JSON))
-                    dest = getattr(settings, "BACKUP_FOLDER_ID", None) or settings.GDRIVE_FOLDER_ID
-                    with st.spinner("⬆️ 인덱스 저장본을 드라이브로 자동 백업 중..."):
-                        _, file_name = export_brain_to_drive(creds, PERSIST_DIR, dest, filename=None)
-                    st.success(f"자동 백업 완료! 파일명: {file_name}")
-                    deleted = prune_old_backups(creds, dest, keep=int(getattr(settings, "BACKUP_KEEP_N", 5)), prefix=INDEX_BACKUP_PREFIX)
-                    if deleted: st.info(f"오래된 백업 {len(deleted)}개 정리 완료.")
-                except Exception as e:
-                    st.warning("자동 백업에 실패했지만, 로컬 저장본은 정상적으로 준비되었습니다.")
-                    with st.expander("백업 오류 보기"): st.exception(e)
-
-            stepper_slot.empty(); bar_slot.empty(); msg_slot.empty(); ctrl_slot.empty()
-            st.rerun(); return
-
+    # 학생 화면
     with st.container():
         st.info("수업 준비 중입니다. 잠시 후 선생님이 두뇌를 연결하면 자동으로 채팅이 열립니다.")
         st.caption("이 화면은 학생 전용으로, 관리자 기능과 준비 과정은 표시하지 않습니다.")
 
 # ===== Chat UI ================================================================
 def render_chat_ui():
-    if "messages" not in st.session_state: st.session_state.messages = []
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
     for m in st.session_state.messages:
-        with st.chat_message(m["role"]): st.markdown(m["content"])
+        with st.chat_message(m["role"]):
+            st.markdown(m["content"])
     st.markdown("---")
-    mode = st.radio("**어떤 도움이 필요한가요?**",
-                    ["💬 이유문법 설명","🔎 구문 분석","📚 독해 및 요약"],
-                    horizontal=True, key="mode_select")
+
+    mode = st.radio(
+        "**어떤 도움이 필요한가요?**",
+        ["💬 이유문법 설명", "🔎 구문 분석", "📚 독해 및 요약"],
+        horizontal=True,
+        key="mode_select",
+    )
     prompt = st.chat_input("질문을 입력하거나, 분석/요약할 문장이나 글을 붙여넣으세요.")
     if prompt:
-        st.session_state.messages.append({"role":"user","content":prompt})
-        with st.chat_message("user"): st.markdown(prompt)
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
         with st.spinner("AI 선생님이 답변을 생각하고 있어요..."):
-            selected_prompt = EXPLAINER_PROMPT if mode=="💬 이유문법 설명" else \
-                              ANALYST_PROMPT if mode=="🔎 구문 분석" else READER_PROMPT
+            selected_prompt = (
+                EXPLAINER_PROMPT if mode == "💬 이유문법 설명" else
+                ANALYST_PROMPT if mode == "🔎 구문 분석" else
+                READER_PROMPT
+            )
             answer = get_text_answer(st.session_state.query_engine, prompt, selected_prompt)
-        st.session_state.messages.append({"role":"assistant","content":answer})
+        st.session_state.messages.append({"role": "assistant", "content": answer})
         st.rerun()
 
 # ===== Entry ================================================================
