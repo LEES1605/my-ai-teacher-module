@@ -1,13 +1,31 @@
 # src/rag_engine.py
 from __future__ import annotations
-import os, json, shutil, io, zipfile, time
-from typing import Callable, Any, Mapping
+import os, json, shutil, io, zipfile
+from typing import Callable, Any, Mapping, List, Tuple
+from datetime import datetime
+try:
+    from zoneinfo import ZoneInfo  # Python 3.9+
+except Exception:
+    ZoneInfo = None  # 폴백
 
 import streamlit as st
 from src.config import settings
 
-# === 인덱스 백업 파일 이름(드라이브에 저장될 ZIP 이름) =========================
-INDEX_BACKUP_NAME = "ai_brain_cache.zip"
+# === 인덱스 백업 파일명 규칙 ===================================================
+INDEX_BACKUP_PREFIX = "ai_brain_cache"  # 결과: ai_brain_cache-YYYYMMDD-HHMMSS.zip
+
+def _now_kst_str() -> str:
+    """Asia/Seoul 기준 타임스탬프 문자열."""
+    try:
+        if ZoneInfo:
+            return datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y%m%d-%H%M%S")
+    except Exception:
+        pass
+    # 폴백: 시스템 로컬 또는 UTC
+    return datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+
+def _build_backup_filename(prefix: str = INDEX_BACKUP_PREFIX) -> str:
+    return f"{prefix}-{_now_kst_str()}.zip"
 
 # === LLM/Embedding 설정(지연 초기화) ==========================================
 def init_llama_settings(api_key: str, llm_model: str, embed_model: str, temperature: float = 0.0):
@@ -41,7 +59,7 @@ def _build_drive_service(creds_dict: Mapping[str, Any], write: bool = False):
     from googleapiclient.discovery import build
     scopes = ["https://www.googleapis.com/auth/drive.readonly"]
     if write:
-        scopes = ["https://www.googleapis.com/auth/drive"]  # 쓰기 포함
+        scopes = ["https://www.googleapis.com/auth/drive"]
     creds = service_account.Credentials.from_service_account_info(dict(creds_dict), scopes=scopes)
     return build("drive", "v3", credentials=creds, cache_discovery=False)
 
@@ -105,7 +123,7 @@ def _validate_sa(creds: Mapping[str, Any] | None) -> Mapping[str, Any]:
         st.stop()
     return creds
 
-# ── 인덱스 백업/복원 ─────────────────────────────────────────────────────────
+# ── 인덱스 ZIP 백업/복원 + 보관정책 ───────────────────────────────────────────
 def _zip_dir(src_dir: str, zip_path: str) -> None:
     os.makedirs(os.path.dirname(zip_path), exist_ok=True)
     with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
@@ -115,48 +133,74 @@ def _zip_dir(src_dir: str, zip_path: str) -> None:
                 rel = os.path.relpath(full, src_dir)
                 zf.write(full, rel)
 
-def export_brain_to_drive(creds: Mapping[str, Any], persist_dir: str, dest_folder_id: str,
-                          filename: str = INDEX_BACKUP_NAME) -> str:
+def _list_backups(svc, folder_id: str, prefix: str = INDEX_BACKUP_PREFIX) -> List[dict]:
+    """지정 폴더 내 prefix로 시작하는 ZIP 백업 목록(최신순)."""
+    q = (
+        f"'{folder_id}' in parents and trashed=false and "
+        f"mimeType='application/zip' and name contains '{prefix}-'"
+    )
+    resp = svc.files().list(
+        q=q, orderBy="modifiedTime desc", pageSize=100,
+        fields="files(id,name,modifiedTime,size,md5Checksum)"
+    ).execute()
+    return resp.get("files", [])
+
+def prune_old_backups(creds: Mapping[str, Any], folder_id: str, keep: int = 5,
+                      prefix: str = INDEX_BACKUP_PREFIX) -> List[Tuple[str, str]]:
     """
-    인덱스 폴더(persist_dir)를 ZIP으로 묶어 드라이브에 업로드. 반환: fileId
+    최신 keep개만 남기고 나머지 삭제. 반환: [(fileId, name), ...] 삭제된 목록
+    """
+    if keep <= 0:
+        keep = 1
+    svc = _build_drive_service(creds, write=True)
+    items = _list_backups(svc, folder_id, prefix)
+    to_delete = items[keep:] if len(items) > keep else []
+    deleted: List[Tuple[str, str]] = []
+    for it in to_delete:
+        try:
+            svc.files().delete(fileId=it["id"]).execute()
+            deleted.append((it["id"], it.get("name", "")))
+        except Exception:
+            # 실패해도 계속 진행
+            pass
+    return deleted
+
+def export_brain_to_drive(creds: Mapping[str, Any], persist_dir: str, dest_folder_id: str,
+                          filename: str | None = None) -> Tuple[str, str]:
+    """
+    인덱스 폴더(persist_dir)를 ZIP으로 묶어 드라이브에 업로드.
+    filename=None이면 날짜가 포함된 이름으로 자동 생성.
+    반환: (file_id, file_name)
     """
     if not os.path.exists(persist_dir):
         raise FileNotFoundError("persist_dir가 없습니다. 먼저 두뇌를 생성하세요.")
-    tmp_zip = os.path.join("/tmp", filename)
+    fname = filename or _build_backup_filename()
+    tmp_zip = os.path.join("/tmp", fname)
     _zip_dir(persist_dir, tmp_zip)
 
     svc = _build_drive_service(creds, write=True)
     from googleapiclient.http import MediaFileUpload
-    file_metadata = {"name": filename, "parents": [dest_folder_id]}
+    file_metadata = {"name": fname, "parents": [dest_folder_id]}
     media = MediaFileUpload(tmp_zip, mimetype="application/zip", resumable=True)
-    # 같은 이름의 기존 파일은 대신 새 파일을 올리고, 나중에 정리할 수 있음
     created = svc.files().create(
         body=file_metadata, media_body=media, fields="id,name,parents"
     ).execute()
-    return created["id"]
+    return created["id"], created["name"]
 
 def import_brain_from_drive(creds: Mapping[str, Any], persist_dir: str, src_folder_id: str,
-                            filename: str = INDEX_BACKUP_NAME) -> bool:
+                            prefix: str = INDEX_BACKUP_PREFIX) -> bool:
     """
-    드라이브에서 ZIP(최신)을 내려받아 persist_dir로 복원. 성공 시 True.
+    드라이브에서 prefix로 시작하는 ZIP 중 '최신 1개'를 내려받아 persist_dir로 복원. 성공 시 True.
     """
     svc = _build_drive_service(creds, write=True)
-    # 폴더 내 동일 파일명 중 최신 1개
-    q = f"name = '{filename}' and '{src_folder_id}' in parents and trashed=false"
-    resp = svc.files().list(
-        q=q,
-        orderBy="modifiedTime desc",
-        pageSize=1,
-        fields="files(id,name,modifiedTime)"
-    ).execute()
-    items = resp.get("files", [])
+    items = _list_backups(svc, src_folder_id, prefix)
     if not items:
         return False
     file_id = items[0]["id"]
 
     from googleapiclient.http import MediaIoBaseDownload
     req = svc.files().get_media(fileId=file_id)
-    tmp_zip = os.path.join("/tmp", filename)
+    tmp_zip = os.path.join("/tmp", items[0]["name"])
     with io.FileIO(tmp_zip, "wb") as fh:
         downloader = MediaIoBaseDownload(fh, req)
         done = False
@@ -172,16 +216,12 @@ def import_brain_from_drive(creds: Mapping[str, Any], persist_dir: str, src_fold
     return True
 
 def try_restore_index_from_drive(creds: Mapping[str, Any], persist_dir: str, folder_id: str) -> bool:
-    """
-    로컬 저장본이 없을 때만 드라이브 백업으로부터 자동 복원.
-    """
+    """로컬 저장본이 없을 때만 드라이브 백업에서 자동 복원."""
     if os.path.exists(persist_dir):
         return True
     try:
-        ok = import_brain_from_drive(creds, persist_dir, folder_id, INDEX_BACKUP_NAME)
-        return ok and os.path.isdir(persist_dir)
-    except Exception as e:
-        # 조용히 실패 처리(사용자 버튼 플로우로 진행)
+        return import_brain_from_drive(creds, persist_dir, folder_id, INDEX_BACKUP_PREFIX)
+    except Exception:
         return False
 
 # ── 인덱스 생성 파이프라인 ───────────────────────────────────────────────────
@@ -195,7 +235,6 @@ def _build_index_with_progress(update_pct: Callable[[int, str | None], None],
     from llama_index.readers.google import GoogleDriveReader
 
     update_pct(15, "Drive 리더 초기화")
-    # 최신 readers-google: service_account_key 인자 사용
     loader = GoogleDriveReader(service_account_key=gcp_creds)
 
     update_pct(30, "문서 목록 불러오는 중")
