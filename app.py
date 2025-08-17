@@ -159,13 +159,18 @@ with colR:
 with st.expander("📤 관리자: 자료 업로드 (원본→prepared 저장)", expanded=False):
     st.caption(
         "원본 파일을 prepared 폴더에 저장합니다. 텍스트 추출물은 인덱스 캐시에만 저장됩니다.\n"
-        "로컬 파일 업로드 + Google Docs/Slides/Sheets URL 가져오기 모두 지원합니다."
+        "로컬 파일 업로드 + Google Docs/Slides/Sheets URL 가져오기 모두 지원합니다.\n"
+        "옵션을 켜면 AI가 제목을 정해 파일명을 변경합니다."
     )
+
+    # ── 옵션: AI가 제목 자동 생성 ────────────────────────────────────────────────
+    auto_title = st.toggle("AI 제목 자동 생성(업로드/가져오기 후 이름 바꾸기)", value=True,
+                           help="LLM이 짧고 명확한 제목을 뽑아 파일명을 바꿉니다. 키가 없으면 휴리스틱으로 제목 생성.")
+    title_hint = st.text_input("제목 힌트(선택)", placeholder="예: 고1 영어 문법 / 학원 교재 / 중간고사 대비 등")
 
     # ── (A) 로컬 파일 업로드: 여러 형식 지원 ─────────────────────────────────────
     SUPPORTED_TYPES = [
         "pdf", "docx", "doc", "pptx", "ppt", "md", "txt", "rtf", "odt", "html", "epub",
-        # 필요 시 아래도 허용 (인덱싱은 건너뛸 수 있음)
         "xlsx", "xls", "csv"
     ]
     files = st.file_uploader(
@@ -186,13 +191,17 @@ with st.expander("📤 관리자: 자료 업로드 (원본→prepared 저장)", 
     status_area = st.empty()
     result_area = st.empty()
 
-    def _ts(): 
+    # ── 유틸: 타임스탬프/파일명 정리/확장자→MIME ─────────────────────────────────
+    def _ts():
         import time
         return time.strftime("%Y%m%d_%H%M%S")
 
     def _safe_name(name: str) -> str:
         import re
-        return re.sub(r"[^\w\-. ]", "_", name).strip() or "untitled"
+        # Windows/NIX 금지문자 제거
+        name = re.sub(r'[\\/:*?"<>|]+', " ", name)
+        name = re.sub(r"\s+", " ", name).strip()
+        return name or "untitled"
 
     def _guess_mime_by_ext(fname: str) -> str:
         ext = (fname.rsplit(".", 1)[-1] if "." in fname else "").lower()
@@ -219,13 +228,75 @@ with st.expander("📤 관리자: 자료 업로드 (원본→prepared 저장)", 
         s = s.strip()
         if not s:
             return None
-        # /d/<id>, id=<id>, 또는 ID만
         for pat in [r"/d/([-\w]{15,})", r"[?&]id=([-\w]{15,})$", r"^([-\w]{15,})$"]:
             m = re.search(pat, s)
             if m:
                 return m.group(1)
         return None
 
+    # ── AI 제목 생성기(LLM + 휴리스틱) ────────────────────────────────────────────
+    from src.rag_engine import make_llm, llm_complete
+
+    _title_model = None  # lazy init
+    def _get_title_model():
+        """OpenAI 있으면 OpenAI, 없으면 Gemini, 둘 다 없으면 None"""
+        nonlocal _title_model
+        if _title_model is not None:
+            return _title_model
+        try:
+            from src.config import settings
+            if getattr(settings, "OPENAI_API_KEY", None) and settings.OPENAI_API_KEY.get_secret_value():
+                _title_model = make_llm("openai",
+                                        settings.OPENAI_API_KEY.get_secret_value(),
+                                        getattr(settings, "OPENAI_LLM_MODEL", "gpt-4o-mini"),
+                                        0.2)
+                return _title_model
+            _title_model = make_llm("google",
+                                    settings.GEMINI_API_KEY.get_secret_value(),
+                                    getattr(settings, "LLM_MODEL", "gemini-1.5-pro"),
+                                    0.2)
+            return _title_model
+        except Exception:
+            return None
+
+    def _heuristic_title(orig_base: str, hint: str = "") -> str:
+        """확장자 제거된 원래 이름 + 힌트를 깔끔히 정리해 40자 내로"""
+        import re
+        base = orig_base
+        base = re.sub(r"\.[^.]+$", "", base)            # .ext 제거
+        base = re.sub(r"^\d{8}_\d{6}__", "", base)      # 앞에 붙인 타임스탬프 패턴 제거
+        base = base.replace("_", " ").replace("-", " ")
+        base = re.sub(r"\s+", " ", base).strip()
+        if hint:
+            base = f"{hint.strip()} — {base}" if base else hint.strip()
+        return (base[:40]).strip() or "untitled"
+
+    def _ai_title(orig_base: str, sample_text: str = "", hint: str = "") -> str:
+        """LLM으로 짧은 한국어 제목 생성(최대 40자). 실패 시 휴리스틱."""
+        model = _get_title_model()
+        if model is None:
+            return _heuristic_title(orig_base, hint)
+
+        prompt = (
+            "다음 파일의 제목을 한국어로 간결하게 만들어 주세요. 규칙:\n"
+            "1) 최대 40자, 2) 불필요한 숫자/확장자 제거, 3) 핵심 키워드 위주, 4) 따옴표/괄호 남발 금지,\n"
+            "5) 문장형 말투보다 명사구 선호, 6) 출력은 제목만(부가 설명/따옴표 X).\n\n"
+            f"[파일명 힌트]\n{orig_base}\n\n"
+        )
+        if hint:
+            prompt += f"[추가 힌트]\n{hint}\n\n"
+        if sample_text:
+            prompt += f"[본문 일부]\n{sample_text[:1200]}\n\n"
+
+        try:
+            title = llm_complete(model, prompt).strip()
+            # 안전화
+            title = _safe_name(title)
+            return (title[:40]).strip() or _heuristic_title(orig_base, hint)
+        except Exception:
+            return _heuristic_title(orig_base, hint)
+
+    # ── 업로드/가져오기 실행 ─────────────────────────────────────────────────────
     if st.button("업로드/가져오기 → prepared", type="primary"):
         import io, time
         from googleapiclient.discovery import build
@@ -235,20 +306,15 @@ with st.expander("📤 관리자: 자료 업로드 (원본→prepared 저장)", 
         from src.config import settings
         from src.google_oauth import is_signed_in, build_drive_service
 
-        # 0) 서비스계정 Drive 클라이언트(쓰기용) + (가능하면) OAuth 클라이언트(읽기/복사용)
+        # 서비스계정 Drive(쓰기), OAuth Drive(있으면 읽기/복사)
         creds_sa = _normalize_sa(settings.GDRIVE_SERVICE_ACCOUNT_JSON)
         drive_sa = build("drive", "v3", credentials=creds_sa)
-
         drive_oauth = build_drive_service() if is_signed_in() else None
 
         rows, done, total_steps = [], 0, 1
-        # 파일 업로드 step 수 계산
-        if files: 
-            total_steps += len(files)
-        # gdocs url들 step 수 계산
+        if files: total_steps += len(files)
         url_list = [u.strip() for u in (gdocs_urls.splitlines() if gdocs_urls else []) if u.strip()]
-        if url_list:
-            total_steps += len(url_list)
+        if url_list: total_steps += len(url_list)
 
         def _tick(msg):
             nonlocal done
@@ -257,13 +323,17 @@ with st.expander("📤 관리자: 자료 업로드 (원본→prepared 저장)", 
             prog.progress(pct, text=msg)
             status_area.info(msg)
 
+        # 업로드/가져오기 결과(Drive id, name, link) 저장
+        created = []  # [{id, name, link, ext, orig_base, sample_text?}]
+
         try:
-            # 1) 로컬 파일 업로드 (원본 그대로 저장)
+            # 1) 로컬 파일 업로드
             if files:
                 for f in files:
                     data = f.read()
                     buf = io.BytesIO(data)
                     base = _safe_name(f.name)
+                    ext = (base.rsplit(".", 1)[-1].lower() if "." in base else "")
                     name = f"{_ts()}__{base}"
                     mime = _guess_mime_by_ext(base)
 
@@ -271,12 +341,12 @@ with st.expander("📤 관리자: 자료 업로드 (원본→prepared 저장)", 
                     meta = {"name": name, "parents": [settings.GDRIVE_FOLDER_ID]}
                     _tick(f"업로드 중: {name}")
                     res = drive_sa.files().create(body=meta, media_body=media, fields="id,webViewLink").execute()
-                    rows.append({"name": name, "open": res.get("webViewLink")})
+                    created.append({"id": res["id"], "name": name, "link": res.get("webViewLink",""),
+                                    "ext": ext, "orig_base": base, "sample_text": ""})
+
                     time.sleep(0.05)
 
-            # 2) Google Docs/Slides/Sheets URL → PDF로 내보내 저장
-            #    - 우선 OAuth(있으면)로 원본 읽기/내보내기
-            #    - 없으면 서비스계정으로 접근(문서가 서비스계정에 공유되어 있어야 함)
+            # 2) Google 문서 링크 → export/copy 후 저장
             for raw in url_list:
                 file_id = _parse_gdoc_id(raw)
                 if not file_id:
@@ -284,14 +354,12 @@ with st.expander("📤 관리자: 자료 업로드 (원본→prepared 저장)", 
                     _tick("잘못된 링크 건너뜀")
                     continue
 
-                # 어떤 서비스로 읽을지 결정
                 drive_ro = drive_oauth or drive_sa  # 로그인되어 있으면 OAuth 우선
                 try:
                     meta = drive_ro.files().get(fileId=file_id, fields="id,name,mimeType").execute()
                     name0 = meta.get("name", "untitled")
                     mtype = meta.get("mimeType", "")
                 except HttpError as he:
-                    # OAuth가 없거나 권한 거부 시: 서비스계정으로 재시도
                     if drive_ro is drive_oauth:
                         try:
                             meta = drive_sa.files().get(fileId=file_id, fields="id,name,mimeType").execute()
@@ -307,12 +375,10 @@ with st.expander("📤 관리자: 자료 업로드 (원본→prepared 저장)", 
                         _tick("접근 실패(공유 필요)")
                         continue
 
-                # Google-native 문서만 export; 그 외는 copy 시도
                 GOOGLE_NATIVE = {
                     "application/vnd.google-apps.document": ("application/pdf", ".pdf"),
                     "application/vnd.google-apps.presentation": ("application/pdf", ".pdf"),
                     "application/vnd.google-apps.spreadsheet": ("application/pdf", ".pdf"),
-                    # 필요하면 spreadsheet는 CSV도 지원 가능: ("text/csv", ".csv")
                 }
 
                 if mtype in GOOGLE_NATIVE:
@@ -324,45 +390,81 @@ with st.expander("📤 관리자: 자료 업로드 (원본→prepared 저장)", 
                     media = MediaIoBaseUpload(buf, mimetype=export_mime, resumable=False)
                     meta2 = {"name": name, "parents": [settings.GDRIVE_FOLDER_ID]}
                     res2 = drive_sa.files().create(body=meta2, media_body=media, fields="id,webViewLink").execute()
-                    rows.append({"name": name, "open": res2.get("webViewLink")})
+                    created.append({"id": res2["id"], "name": name, "link": res2.get("webViewLink",""),
+                                    "ext": ext.strip("."), "orig_base": name0, "sample_text": ""})
                 else:
-                    # 네이티브가 아닌 경우: prepared로 복사 시도
+                    # 네이티브가 아닌 경우: prepared로 복사
                     _tick(f"복사 중: {name0} (파일)")
                     body = {"name": f"{_ts()}__{_safe_name(name0)}", "parents": [settings.GDRIVE_FOLDER_ID]}
                     try:
-                        # 서비스계정으로 먼저 시도(편집 권한이 있으면 성공)
                         res3 = drive_sa.files().copy(fileId=file_id, body=body, fields="id,webViewLink").execute()
                     except HttpError:
-                        # 서비스계정이 안되면 OAuth로 시도(로그인 필요)
                         if drive_oauth:
                             res3 = drive_oauth.files().copy(fileId=file_id, body=body, fields="id,webViewLink").execute()
                         else:
                             rows.append({"name": f"(복사 실패) {name0}", "open": "권한 부족 — 서비스계정에 공유하거나 OAuth 로그인"})
                             continue
-                    rows.append({"name": body["name"], "open": res3.get("webViewLink")})
+                    created.append({"id": res3["id"], "name": body["name"], "link": res3.get("webViewLink",""),
+                                    "ext": "", "orig_base": name0, "sample_text": ""})
                     time.sleep(0.05)
 
-            # 3) 결과 표시
+            # 3) (옵션) AI 제목으로 파일명 변경
+            renamed_rows = []
+            if auto_title and created:
+                used = set()
+                for item in created:
+                    fid = item["id"]
+                    old_name = item["name"]
+                    ext = f".{item['ext']}" if item.get("ext") else ""
+                    # 샘플 텍스트 확보: 간단히 원래 이름만으로도 가능, 텍스트 파일/MD면 일부 본문까지
+                    sample = ""
+                    if item.get("ext") in {"txt", "md"}:
+                        # 텍스트/MD는 원본 업로드 전에도 읽을 수 있지만 지금은 이미 업로드 상태.
+                        # 간단히 파일명 기반으로도 충분. (추후 Drive download 후 본문 사용 가능)
+                        sample = ""
+
+                    ai_title = _ai_title(item.get("orig_base", old_name), sample_text=sample, hint=title_hint)
+                    # 최종 파일명: 타임스탬프__AI제목 + 원래 확장자
+                    new_name = f"{_ts()}__{ai_title}{ext}"
+                    new_name = _safe_name(new_name)
+                    # 중복 최소화(동일 배치 내)
+                    k = new_name; n = 2
+                    while k in used:
+                        k = f"{new_name} ({n})"; n += 1
+                    new_name = k; used.add(new_name)
+
+                    try:
+                        upd = drive_sa.files().update(fileId=fid, body={"name": new_name}).execute()
+                        renamed_rows.append({"original": old_name, "renamed_to": new_name, "open": item["link"]})
+                    except Exception as e:
+                        renamed_rows.append({"original": old_name, "renamed_to": f"(이름 변경 실패) {e}", "open": item["link"]})
+            else:
+                for item in created:
+                    renamed_rows.append({"original": item["name"], "renamed_to": "(AI 제목 생성 꺼짐)", "open": item["link"]})
+
+            # 4) 결과 표시
             prog.progress(100, text="완료")
-            status_area.success(f"총 {len(rows)}개 항목 처리 완료 (prepared)")
-            if rows:
+            status_area.success(f"총 {len(created)}개 항목 처리 완료 (prepared)")
+            if renamed_rows:
                 import pandas as pd
-                df = pd.DataFrame(rows)
+                df = pd.DataFrame(renamed_rows)
                 result_area.dataframe(
                     df, use_container_width=True, hide_index=True,
                     column_config={
-                        "name": st.column_config.TextColumn("파일명"),
+                        "original": st.column_config.TextColumn("원래 파일명"),
+                        "renamed_to": st.column_config.TextColumn("변경 후 파일명"),
                         "open": st.column_config.LinkColumn("열기", display_text="열기")
                     }
                 )
             st.toast("업로드/가져오기 완료 — 변경 사항은 인덱싱 시 반영됩니다.", icon="✅")
 
-            # 4) 인덱싱 다시 돌릴 수 있도록 준비 버튼 재활성화
+            # 인덱싱을 다시 돌릴 수 있도록 준비 버튼 재활성화
             ss.prep_both_done = False
 
         except Exception as e:
             prog.progress(0, text="오류")
             status_area.error(f"처리 실패: {e}")
+# ==============================================================================
 
 # ============= 7) 인덱싱 보고서(스킵된 파일 포함) ===============================
 rep = ss.get("indexing_report")
