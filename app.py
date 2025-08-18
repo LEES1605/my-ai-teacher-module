@@ -18,7 +18,10 @@ os.environ["STREAMLIT_SERVER_ENABLE_WEBSOCKET_COMPRESSION"] = "false"
 from src.config import settings, PERSIST_DIR
 from src.ui import load_css, safe_render_header, ensure_progress_css, render_progress_bar
 from src.prompts import EXPLAINER_PROMPT, ANALYST_PROMPT, READER_PROMPT
-from src.rag_engine import get_or_build_index, init_llama_settings, get_text_answer
+from src.rag_engine import (
+    get_or_build_index, init_llama_settings, get_text_answer,
+    _normalize_sa, _validate_sa, try_restore_index_from_drive
+)
 from src.auth import admin_login_flow
 
 # ===== [04] PAGE SETUP =======================================================
@@ -39,7 +42,8 @@ def _log(msg: str):
     st.session_state.setdefault("_ui_logs", [])
     ts = dt.datetime.now().strftime("%H:%M:%S")
     st.session_state["_ui_logs"].append(f"[{ts}] {msg}")
-
+def _log_kv(key: str, val: str):
+    _log(f"{key}: {val}")
 def _log_exception(prefix: str, exc: Exception):
     _log(f"{prefix}: {exc}")
     tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
@@ -218,10 +222,14 @@ with right:
 # ===== [09] MAIN: 강의 준비 & 채팅 ===========================================
 with left:
     # --- [09-1] 두뇌 준비 ----------------------------------------------------
-    if "query_engine" not in st.session_state:
-        st.markdown("## 📚 강의 준비")
-        st.info("AI 두뇌가 아직 준비되지 않았습니다. 아래 버튼을 눌러 주세요.")
+if "query_engine" not in st.session_state:
+    st.markdown("## 📚 강의 준비")
+    st.info("AI 두뇌가 아직 준비되지 않았습니다. 아래 버튼을 눌러 주세요.")
 
+    c_btn, c_diag = st.columns([0.55, 0.45])
+
+    # ===== (A) AI 두뇌 준비(복구/연결) =====
+    with c_btn:
         if st.button("🧠 AI 두뇌 준비(복구/연결)"):
             try:
                 bar_slot = st.empty(); msg_slot = st.empty()
@@ -264,7 +272,7 @@ with left:
                 st.error("두뇌 준비 중 오류. 우측 로그/Traceback 확인.")
                 st.stop()
 
-        # 학생 화면 보조 버튼
+        # 학생 보조 버튼: 두뇌 초기화
         if st.button("📥 강의 자료 다시 불러오기(두뇌 초기화)"):
             import shutil
             try:
@@ -276,7 +284,50 @@ with left:
             except Exception as e:
                 _log_exception("본문 초기화 실패", e)
                 st.error("초기화 중 오류. 우측 로그/Traceback 확인.")
-        st.stop()
+
+    # ===== (B) 🧪 연결 진단(빠름) =====
+    with c_diag:
+        st.markdown("#### 🧪 연결 진단(빠름)")
+        st.caption("로컬 캐시/서비스계정/폴더 ID/Drive 복구 시도를 한 번에 검사합니다.")
+        if st.button("연결 진단 실행"):
+            try:
+                # 1) 로컬 캐시 상태
+                _log_kv("PERSIST_DIR", PERSIST_DIR)
+                if os.path.exists(PERSIST_DIR):
+                    files = os.listdir(PERSIST_DIR)
+                    _log_kv("local_cache", f"exists ✅, files={len(files)}")
+                else:
+                    _log_kv("local_cache", "missing ❌")
+
+                # 2) 서비스 계정 JSON 유효성
+                try:
+                    sa_norm = _normalize_sa(settings.GDRIVE_SERVICE_ACCOUNT_JSON)
+                    creds = _validate_sa(sa_norm)
+                    _log("service_account: valid ✅")
+                except Exception as se:
+                    _log_exception("service_account invalid ❌", se)
+
+                # 3) 폴더 ID 점검
+                folder_id = getattr(settings, "BACKUP_FOLDER_ID", None) or getattr(settings, "GDRIVE_FOLDER_ID", None)
+                _log_kv("folder_id", str(folder_id or "(empty)"))
+                if not folder_id:
+                    _log("folder_id 비어있음 ❌ — secrets.toml 확인 필요")
+
+                # 4) Drive 복구 시도 (로컬 캐시가 없을 때만 의미 있음)
+                if not os.path.exists(PERSIST_DIR) and folder_id:
+                    try:
+                        ok = try_restore_index_from_drive(creds, PERSIST_DIR, folder_id)
+                        _log_kv("drive_restore", "success ✅" if ok else "not found/failed ❌")
+                    except Exception as de:
+                        _log_exception("drive_restore error", de)
+
+                st.success("진단이 완료되었습니다. 우측 로그/Traceback을 확인하세요.")
+
+            except Exception as e:
+                _log_exception("연결 진단 자체 실패", e)
+                st.error("연결 진단 중 오류. 우측 로그/Traceback 확인.")
+
+    st.stop()
 
     # --- [09-2] 채팅 UI ------------------------------------------------------
     if "messages" not in st.session_state:
