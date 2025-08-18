@@ -96,14 +96,21 @@ is_admin = admin_login_flow(RAW_ADMIN_PW) if HAS_ADMIN_PW and st.session_state.g
 # ✅ 최종 관리자 여부(학생 화면 봉인용): admin_mode AND is_admin
 effective_admin = bool(st.session_state.get("admin_mode") and is_admin)
 
-# ===== [07] 2-COLUMN LAYOUT (로그 패널은 항상 우측) ==========================
-left, right = st.columns([0.66, 0.34], gap="large")
-with right:
-    st.markdown("### 🔎 로그 / 오류 메시지")
-    st.caption("진행/오류 메시지가 여기에 누적됩니다. 복붙해서 공유하세요.")
-    st.code("\n".join(st.session_state.get("_ui_logs", [])) or "로그 없음", language="text")
-    st.markdown("**Traceback (있다면)**")
-    st.code(st.session_state.get("_ui_traceback", "") or "(없음)", language="text")
+# ===== [07] 2-COLUMN LAYOUT (관리자 전용 로그 패널) ==========================
+# 관리자일 때만 좌/우 2단 레이아웃. 학생 화면은 본문 전체 폭 사용.
+if effective_admin:
+    left, right = st.columns([0.66, 0.34], gap="large")
+    with right:
+        st.markdown("### 🔎 로그 / 오류 메시지")
+        st.caption("진행/오류 메시지가 여기에 누적됩니다. 복붙해서 공유하세요.")
+        st.code("\n".join(st.session_state.get("_ui_logs", [])) or "로그 없음", language="text")
+        st.markdown("**Traceback (있다면)**")
+        st.code(st.session_state.get("_ui_traceback", "") or "(없음)", language="text")
+else:
+    # 학생 화면: 전체 폭 컨테이너만 사용
+    left = st.container()
+    right = None
+
 
 # ===== [08] SIDEBAR — 관리자 패널(가드 철저) ================================
 with st.sidebar:
