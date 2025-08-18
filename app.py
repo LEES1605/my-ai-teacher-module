@@ -1,8 +1,8 @@
 # ===== [01] TOP OF FILE ======================================================
-# Streamlit AI-Teacher — 임포트 에러 회피 + 캐시 데코레이터 호환 버전
+# Streamlit AI-Teacher — 가독성 강화 + 관리자 가드(인증 전 완전 비표시) 버전
 # - UI 유틸(배경/CSS/헤더/진행바) 내장
 # - src 패키지 실패 시 루트 모듈 폴백
-# - st.cache_data 미지원 환경에서도 동작하도록 호환 데코레이터 추가
+# - 다크 테마 폴백 + 사이드바 고대비 + 입력칸/본문 색 분리
 
 # ===== [02] ENV VARS =========================================================
 import os, time, re, datetime as dt, traceback, base64
@@ -66,33 +66,21 @@ except Exception as e:
 
 # ===== [03.5] STREAMLIT CACHE COMPAT ========================================
 def _compat_cache_data(**kwargs):
-    """
-    st.cache_data(>=1.18) → 있으면 사용
-    st.cache(구버전) → 대체 사용
-    둘 다 없으면 no-op 데코레이터 반환
-    """
-    if hasattr(st, "cache_data"):
-        return st.cache_data(**kwargs)
-    if hasattr(st, "cache"):
-        return st.cache(**kwargs)
-    def _noop_deco(fn):
-        return fn
-    return _noop_deco
+    if hasattr(st, "cache_data"): return st.cache_data(**kwargs)
+    if hasattr(st, "cache"):      return st.cache(**kwargs)
+    def _noop(fn): return fn
+    return _noop
 
-# ===== [04] INLINE UI UTILITIES (no external ui.py) ==========================
+# ===== [04] INLINE UI UTILITIES =============================================
 @_compat_cache_data(show_spinner=False)
 def _read_text(path_str: str) -> str:
-    try:
-        return Path(path_str).read_text(encoding="utf-8")
-    except Exception:
-        return ""
+    try: return Path(path_str).read_text(encoding="utf-8")
+    except Exception: return ""
 
 @_compat_cache_data(show_spinner=False)
 def _file_b64(path_str: str) -> str:
-    try:
-        return base64.b64encode(Path(path_str).read_bytes()).decode()
-    except Exception:
-        return ""
+    try: return base64.b64encode(Path(path_str).read_bytes()).decode()
+    except Exception: return ""
 
 def load_css(file_path: str, use_bg: bool = False, bg_path: str | None = None) -> None:
     css = _read_text(file_path) or ""
@@ -124,11 +112,10 @@ def safe_render_header(
         <style>
         .aihdr-wrap{{display:flex;align-items:center;gap:14px;margin:6px 0 10px;}}
         .aihdr-logo{{height:{_logo_h}px;width:auto;object-fit:contain;display:block}}
-        .aihdr-title{{font-size:{getattr(settings,'TITLE_SIZE_REM',2.0)}rem;color:{getattr(settings,'BRAND_COLOR','#F7FAFC')};margin:0}}
-        .aihdr-sub{{color:#E2E8F0;margin:2px 0 0 0;}}
+        .aihdr-title{{font-size:{getattr(settings,'TITLE_SIZE_REM',2.2)}rem;color:{getattr(settings,'BRAND_COLOR','#F8FAFC')};margin:0}}
+        .aihdr-sub{{color:#C7D2FE;margin:2px 0 0 0;}}
         </style>
-        """,
-        unsafe_allow_html=True,
+        """, unsafe_allow_html=True,
     )
     left, _right = st.columns([0.85, 0.15])
     with left:
@@ -141,27 +128,23 @@ def safe_render_header(
                 {f'<div class="aihdr-sub">{_subtitle}</div>' if _subtitle else ''}
               </div>
             </div>
-            """,
-            unsafe_allow_html=True,
+            """, unsafe_allow_html=True,
         )
 
 def ensure_progress_css() -> None:
-    st.markdown(
-        """
-        <style>
-        .gp-wrap{ width:100%; height:28px; border-radius:12px;
-          background: rgba(255,255,255,.12);
-          border:1px solid rgba(255,255,255,.25);
-          position:relative; overflow:hidden; box-shadow:0 4px 14px rgba(0,0,0,.15);
-        }
-        .gp-fill{ height:100%; background:linear-gradient(90deg,#7c5ad9,#9067C6); transition:width .25s ease; }
-        .gp-label{ position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
-          font-weight:800; color:#F7FAFC; text-shadow:0 1px 2px rgba(0,0,0,.4); font-size:20px; pointer-events:none; }
-        .gp-msg{ margin-top:.5rem; color:#F7FAFC; opacity:.9; font-size:0.95rem; }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
+    st.markdown("""
+    <style>
+      .gp-wrap{ width:100%; height:28px; border-radius:12px;
+        background:#1f2937; border:1px solid #334155;
+        position:relative; overflow:hidden; box-shadow:0 4px 14px rgba(0,0,0,.25);
+      }
+      .gp-fill{ height:100%; background:linear-gradient(90deg,#7c5ad9,#9067C6); transition:width .25s ease; }
+      .gp-label{ position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+        font-weight:800; color:#E8EDFF; text-shadow:0 1px 2px rgba(0,0,0,.5); font-size:18px; pointer-events:none;
+      }
+      .gp-msg{ margin-top:.5rem; color:#E8EDFF; opacity:.9; font-size:0.95rem; }
+    </style>
+    """, unsafe_allow_html=True)
 
 def render_progress_bar(slot, pct: int) -> None:
     pct = max(0, min(100, int(pct)))
@@ -171,8 +154,7 @@ def render_progress_bar(slot, pct: int) -> None:
           <div class="gp-fill" style="width:{pct}%"></div>
           <div class="gp-label">{pct}%</div>
         </div>
-        """,
-        unsafe_allow_html=True,
+        """, unsafe_allow_html=True,
     )
 
 # ===== [05] PAGE SETUP =======================================================
@@ -181,21 +163,57 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
-# 강제 배경 & 가독성 폴백
+
+# 배경/스타일 로딩 + 가독성 폴백 + 사이드바 고대비
 _BG_PATH = "assets/background_book.png"
 load_css("assets/style.css", use_bg=True, bg_path=_BG_PATH)
-st.markdown("<style>[data-testid='stSidebar']{display:block!important;}</style>", unsafe_allow_html=True)
+
 st.markdown("""
 <style>
-.stApp{ background:#0B1220 !important; color:#F7FAFC !important; }
-h1,h2,h3,h4,h5,h6{ color:#F7FAFC !important; }
+/* 전체 폴백 다크 */
+.stApp{ background:#0b1220 !important; color:#E8EDFF !important; }
+h1,h2,h3,h4,h5,h6{ color:#F8FAFC !important; }
+
+/* 헤더/툴바 투명 */
 [data-testid="stHeader"],[data-testid="stToolbar"]{ background:transparent !important; }
+
+/* ===== 사이드바 고대비 ===== */
+[data-testid="stSidebar"]{ display:block!important; background:#0f172a !important; border-right:1px solid #334155; }
+[data-testid="stSidebar"] *{ color:#E8EDFF !important; }
+[data-testid="stSidebar"] .stButton>button{ background:#334155 !important; border:1px solid #475569 !important; }
+
+/* ===== 입력칸(텍스트/비번/에어리어): 본문 대비 ↑ ===== */
 [data-testid="stTextInput"] input, input[type="text"], input[type="password"], textarea{
-  background: rgba(255,255,255,0.12) !important;
-  border: 1px solid rgba(255,255,255,0.25) !important;
-  color: #FFFFFF !important; caret-color:#FFFFFF !important; border-radius:10px !important;
+  background:#111827 !important;    /* 더 어두운 입력칸 */
+  border:1px solid #374151 !important;
+  color:#F9FAFB !important; caret-color:#F9FAFB !important;
+  border-radius:10px !important;
 }
-[data-testid="stTextInput"] input::placeholder, textarea::placeholder{ color: rgba(255,255,255,.6) !important; }
+[data-testid="stTextInput"] input::placeholder, textarea::placeholder{ color:#9CA3AF !important; }
+
+/* 알림/카드 톤 */
+[data-testid="stAlert"]{ background:#111827 !important; border:1px solid #334155 !important; }
+[data-testid="stAlert"] p{ color:#E8EDFF !important; }
+
+/* 채팅 버블(본문 내용 가독성) */
+[data-testid="stChatMessage"]{
+  background:#0f172a !important; border:1px solid #273449 !important;
+  border-radius:12px; padding:1rem; margin-bottom:1rem;
+}
+[data-testid="stChatMessage"] p, [data-testid="stChatMessage"] li{ color:#E8EDFF !important; }
+
+/* 버튼 기본 */
+.stButton>button{
+  border-radius:999px; border:1px solid #6b7280;
+  background:#4f46e5; color:#fff; font-weight:700; padding:10px 18px;
+}
+.stButton>button:hover{ background:#4338ca; }
+
+/* 라디오/슬라이더 라벨 색 고정 */
+[data-testid="stRadio"] label p, [data-testid="stSlider"] *{ color:#E8EDFF !important; }
+
+/* 우측 로그 박스 코드 색 */
+pre, code{ color:#CFE3FF !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -215,30 +233,42 @@ def _log_exception(prefix: str, exc: Exception):
 
 def _log_kv(k, v): _log(f"{k}: {v}")
 
-# ===== [07] ADMIN PANEL (SIDEBAR) ===========================================
-# 상단 관리자 아이콘
-_, _, _c3 = st.columns([0.8, 0.1, 0.1])
+# ===== [07] ADMIN ENTRY / GUARD =============================================
+# 상단 관리자 아이콘만 항상 보이게 (패널은 인증 전 완전 숨김)
+_, _, _c3 = st.columns([0.82, 0.09, 0.09])
 with _c3:
     if st.button("🛠️", key="admin_icon_top_bar"):
         st.session_state.admin_mode = True
         _log("관리자 버튼 클릭")
 
-is_admin = admin_login_flow(settings.ADMIN_PASSWORD or "")
+# 인증 실행 (패널은 아래 가드로 제어)
+is_admin = admin_login_flow(getattr(settings, "ADMIN_PASSWORD", "") or "")
 
+# ===== [08] 2-COLUMN LAYOUT ==================================================
+left, right = st.columns([0.66, 0.34], gap="large")
+with right:
+    st.markdown("### 🔎 로그 / 오류 메시지")
+    st.caption("진행/오류 메시지가 여기에 누적됩니다. 복붙해서 공유하세요.")
+    st.code("\n".join(st.session_state.get("_ui_logs", [])) or "로그 없음", language="text")
+    st.markdown("**Traceback (있다면)**")
+    st.code(st.session_state.get("_ui_traceback", "") or "(없음)", language="text")
+
+# ===== [09] SIDEBAR (ADMIN-ONLY CONTENT) ====================================
+# ✅ 관리자 인증 전에는 사이드바 관리자 패널 '전부 미표시'
 with st.sidebar:
-    st.markdown("## ⚙️ 관리자 패널")
     if is_admin:
+        st.markdown("## ⚙️ 관리자 패널")
+        # 응답 모드
         st.markdown("### 🧭 응답 모드")
         st.session_state.setdefault("use_manual_override", False)
         st.session_state["use_manual_override"] = st.checkbox(
-            "수동 모드(관리자 오버라이드) 사용", value=st.session_state["use_manual_override"]
-        )
+            "수동 모드(관리자 오버라이드) 사용", value=st.session_state["use_manual_override"])
         st.session_state.setdefault("manual_prompt_mode", "explainer")
         st.session_state["manual_prompt_mode"] = st.selectbox(
             "수동 모드 선택", ["explainer","analyst","reader"],
             index=["explainer","analyst","reader"].index(st.session_state["manual_prompt_mode"])
         )
-
+        # RAG/LLM
         with st.expander("🤖 RAG/LLM 설정", expanded=False):
             c1, c2, c3 = st.columns(3)
             with c1:
@@ -253,34 +283,23 @@ with st.sidebar:
                     "response_mode", ["compact","refine","tree_summarize"],
                     index=["compact","refine","tree_summarize"].index(st.session_state["response_mode"])
                 )
-
+        # 도구
         with st.expander("🛠️ 관리자 도구", expanded=False):
             if st.button("↺ 두뇌 초기화(인덱스 삭제)"):
                 import shutil
                 try:
-                    if os.path.exists(PERSIST_DIR):
-                        shutil.rmtree(PERSIST_DIR)
+                    if os.path.exists(PERSIST_DIR): shutil.rmtree(PERSIST_DIR)
                     st.session_state.pop("query_engine", None)
-                    _log("두뇌 초기화 완료")
-                    st.success("두뇌 파일 삭제됨. 메인에서 다시 준비하세요.")
+                    _log("두뇌 초기화 완료"); st.success("두뇌 파일 삭제됨. 메인에서 다시 준비하세요.")
                 except Exception as e:
-                    _log_exception("두뇌 초기화 실패", e)
-                    st.error("초기화 중 오류. 우측 로그/Traceback 확인.")
+                    _log_exception("두뇌 초기화 실패", e); st.error("초기화 중 오류. 우측 로그/Traceback 확인.")
     else:
-        st.info("우측 상단 '🛠️' 버튼으로 관리자 인증을 진행하세요.")
+        # 관리자 전용 요소 완전 미표시 (빈 사이드바 유지)
+        pass
 
-# ===== [08] 2-COLUMN LAYOUT ==================================================
-left, right = st.columns([0.66, 0.34], gap="large")
-with right:
-    st.markdown("### 🔎 로그 / 오류 메시지")
-    st.caption("진행/오류 메시지가 여기에 누적됩니다. 복붙해서 공유하세요.")
-    st.code("\n".join(st.session_state.get("_ui_logs", [])) or "로그 없음", language="text")
-    st.markdown("**Traceback (있다면)**")
-    st.code(st.session_state.get("_ui_traceback", "") or "(없음)", language="text")
-
-# ===== [09] MAIN: 강의 준비 & 진단 & 채팅 ===================================
+# ===== [10] MAIN: 강의 준비 & 진단 & 채팅 ===================================
 with left:
-    # --- [09-1] 두뇌 준비 ----------------------------------------------------
+    # --- [10-1] 두뇌 준비 ----------------------------------------------------
     if "query_engine" not in st.session_state:
         st.markdown("## 📚 강의 준비")
         st.info("‘AI 두뇌 준비’는 로컬 저장본이 있으면 연결하고, 없으면 Drive에서 복구합니다.\n서비스 계정 권한과 폴더 ID가 올바른지 확인하세요.")
@@ -316,8 +335,7 @@ with left:
                         response_mode=st.session_state.get("response_mode", getattr(settings,"RESPONSE_MODE","compact")),
                         similarity_top_k=int(st.session_state.get("similarity_top_k", getattr(settings,"SIMILARITY_TOP_K",5)))
                     )
-                    update_pct(100, "두뇌 준비 완료!")
-                    time.sleep(0.4); st.rerun()
+                    update_pct(100, "두뇌 준비 완료!"); time.sleep(0.4); st.rerun()
                 except Exception as e:
                     _log_exception("두뇌 준비 실패", e)
                     st.error("두뇌 준비 중 오류. 우측 로그/Traceback 확인."); st.stop()
@@ -325,14 +343,11 @@ with left:
             if st.button("📥 강의 자료 다시 불러오기(두뇌 초기화)"):
                 import shutil
                 try:
-                    if os.path.exists(PERSIST_DIR):
-                        shutil.rmtree(PERSIST_DIR)
+                    if os.path.exists(PERSIST_DIR): shutil.rmtree(PERSIST_DIR)
                     st.session_state.pop("query_engine", None)
-                    _log("본문에서 두뇌 초기화 실행")
-                    st.success("두뇌 파일을 삭제했습니다. 다시 ‘AI 두뇌 준비’를 눌러주세요.")
+                    _log("본문에서 두뇌 초기화 실행"); st.success("두뇌 파일을 삭제했습니다. 다시 ‘AI 두뇌 준비’를 눌러주세요.")
                 except Exception as e:
-                    _log_exception("본문 초기화 실패", e)
-                    st.error("초기화 중 오류. 우측 로그/Traceback 확인.")
+                    _log_exception("본문 초기화 실패", e); st.error("초기화 중 오류. 우측 로그/Traceback 확인.")
 
         with diag_col:
             st.markdown("#### 🧪 연결 진단(빠름)")
@@ -362,21 +377,18 @@ with left:
                             _log_exception("drive_restore error", de)
                     st.success("진단 완료. 우측 로그/Traceback 확인하세요.")
                 except Exception as e:
-                    _log_exception("연결 진단 자체 실패", e)
-                    st.error("연결 진단 중 오류. 우측 로그/Traceback 확인.")
+                    _log_exception("연결 진단 자체 실패", e); st.error("연결 진단 중 오류. 우측 로그/Traceback 확인.")
         st.stop()
 
-    # --- [09-2] 채팅 UI ------------------------------------------------------
+    # --- [10-2] 채팅 UI ------------------------------------------------------
     if "messages" not in st.session_state: st.session_state.messages = []
     for m in st.session_state.messages:
         with st.chat_message(m["role"]): st.markdown(m["content"])
     st.markdown("---")
 
-    mode_label = st.radio(
-        "**어떤 도움이 필요한가요?**",
-        ["💬 이유문법 설명","🔎 구문 분석","📚 독해 및 요약"],
-        horizontal=True, key="mode_select"
-    )
+    mode_label = st.radio("**어떤 도움이 필요한가요?**",
+                          ["💬 이유문법 설명","🔎 구문 분석","📚 독해 및 요약"],
+                          horizontal=True, key="mode_select")
     prompt = st.chat_input("질문을 입력하거나, 분석/요약할 문장이나 글을 붙여넣으세요.")
     if not prompt: st.stop()
 
@@ -395,10 +407,8 @@ with left:
     try:
         with st.spinner("AI 선생님이 답변을 생각하고 있어요..."):
             answer = get_text_answer(st.session_state.query_engine, prompt, selected_prompt)
-        st.session_state.messages.append({"role":"assistant","content":answer})
-        st.rerun()
+        st.session_state.messages.append({"role":"assistant","content":answer}); st.rerun()
     except Exception as e:
-        _log_exception("답변 생성 실패", e)
-        st.error("답변 생성 중 오류. 우측 로그/Traceback 확인.")
+        _log_exception("답변 생성 실패", e); st.error("답변 생성 중 오류. 우측 로그/Traceback 확인.")
 
-# ===== [10] END OF FILE ======================================================
+# ===== [11] END OF FILE ======================================================
