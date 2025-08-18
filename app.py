@@ -307,47 +307,96 @@ with left:
         btn_col, diag_col = st.columns([0.55, 0.45])
         with btn_col:
             if st.button("🧠 AI 두뇌 준비(복구/연결)"):
-                try:
-                    bar_slot = st.empty(); msg_slot = st.empty()
-                    key = "_gp_pct"; st.session_state[key] = 0
-                    def update_pct(p, m=None):
-                        st.session_state[key] = max(0, min(100, int(p)))
-                        render_progress_bar(bar_slot, st.session_state[key])
-                        if m:
-                            msg_slot.markdown(f"<div class='gp-msg'>{m}</div>", unsafe_allow_html=True)
-                            _log(m)
+                bar_slot = st.empty()
+                msg_slot = st.empty()
+                key = "_gp_pct"
+                st.session_state[key] = 0
 
+                def update_pct(p, m=None):
+                    st.session_state[key] = max(0, min(100, int(p)))
+                    render_progress_bar(bar_slot, st.session_state[key])
+                    if m:
+                        msg_slot.markdown(f"<div class='gp-msg'>{m}</div>", unsafe_allow_html=True)
+                        _log(m)
+
+                try:
+                    # 0) 시작 메시지
                     update_pct(0, "두뇌 준비를 시작합니다…")
-                    init_llama_settings(
-                        api_key=settings.GEMINI_API_KEY.get_secret_value(),
-                        llm_model=settings.LLM_MODEL, embed_model=settings.EMBED_MODEL,
-                        temperature=float(st.session_state.get("temperature", 0.0))
-                    )
-                    index = get_or_build_index(
-                        update_pct=update_pct,
-                        update_msg=lambda m: update_pct(st.session_state[key], m),
-                        gdrive_folder_id=getattr(settings,"GDRIVE_FOLDER_ID", None),
-                        raw_sa=getattr(settings,"GDRIVE_SERVICE_ACCOUNT_JSON", None),
-                        persist_dir=PERSIST_DIR,
-                        manifest_path=getattr(settings,"MANIFEST_PATH", None)
-                    )
-                    st.session_state.query_engine = index.as_query_engine(
-                        response_mode=st.session_state.get("response_mode", getattr(settings,"RESPONSE_MODE","compact")),
-                        similarity_top_k=int(st.session_state.get("similarity_top_k", getattr(settings,"SIMILARITY_TOP_K",5)))
-                    )
-                    update_pct(100, "두뇌 준비 완료!"); time.sleep(0.4); st.rerun()
+
+                    # 1) LLM 초기화(여기서 실패하는 경우가 많음)
+                    try:
+                        init_llama_settings(
+                            api_key=settings.GEMINI_API_KEY.get_secret_value(),
+                            llm_model=settings.LLM_MODEL,
+                            embed_model=settings.EMBED_MODEL,
+                            temperature=float(st.session_state.get("temperature", 0.0))
+                        )
+                        _log("LLM 설정 완료")
+                        update_pct(2, "설정 확인 중…")
+                    except Exception as ee:
+                        # rag_engine의 사용자친화 예외라면 public_msg 노출
+                        public = getattr(ee, "public_msg", str(ee))
+                        _log_exception("LLM 초기화 실패", ee)
+                        st.error(f"LLM 초기화 실패: {public}")
+                        st.stop()
+
+                    # 2) 인덱스 로드/복구
+                    try:
+                        folder_id = getattr(settings, "GDRIVE_FOLDER_ID", None) or getattr(settings, "BACKUP_FOLDER_ID", None)
+                        raw_sa = getattr(settings, "GDRIVE_SERVICE_ACCOUNT_JSON", None)
+                        persist_dir = PERSIST_DIR
+
+                        # 진단 스냅샷(실패 시 우측에 함께 보이도록 선기록)
+                        _log_kv("PERSIST_DIR", persist_dir)
+                        _log_kv("folder_id", str(folder_id or "(empty)"))
+                        _log_kv("has_service_account", "yes" if raw_sa else "no")
+
+                        index = get_or_build_index(
+                            update_pct=update_pct,
+                            update_msg=lambda m: update_pct(st.session_state[key], m),
+                            gdrive_folder_id=folder_id,
+                            raw_sa=raw_sa,
+                            persist_dir=persist_dir,
+                            manifest_path=getattr(settings, "MANIFEST_PATH", None)
+                        )
+                    except Exception as ee:
+                        public = getattr(ee, "public_msg", str(ee))
+                        _log_exception("인덱스 준비 실패", ee)
+                        st.error(f"두뇌 준비 실패: {public}")
+                        st.stop()
+
+                    # 3) QueryEngine 생성
+                    try:
+                        st.session_state.query_engine = index.as_query_engine(
+                            response_mode=st.session_state.get("response_mode", getattr(settings, "RESPONSE_MODE", "compact")),
+                            similarity_top_k=int(st.session_state.get("similarity_top_k", getattr(settings, "SIMILARITY_TOP_K", 5)))
+                        )
+                        update_pct(100, "두뇌 준비 완료!")
+                        _log("query_engine 생성 완료 ✅")
+                        time.sleep(0.3)
+                        st.rerun()
+                    except Exception as ee:
+                        public = getattr(ee, "public_msg", str(ee))
+                        _log_exception("QueryEngine 생성 실패", ee)
+                        st.error(f"두뇌 준비는 되었으나 QueryEngine 생성에서 실패: {public}")
+                        st.stop()
+
                 except Exception as e:
-                    _log_exception("두뇌 준비 실패", e)
-                    st.error("두뇌 준비 중 오류. 우측 로그/Traceback 확인."); st.stop()
+                    # 최상위 가드 — 어떤 예외라도 우측 Traceback은 반드시 찍힌다
+                    _log_exception("예상치 못한 오류", e)
+                    st.error("두뇌 준비 중 알 수 없는 오류. 우측 로그/Traceback을 확인하세요.")
+                    st.stop()
 
             if st.button("📥 강의 자료 다시 불러오기(두뇌 초기화)"):
                 import shutil
                 try:
                     if os.path.exists(PERSIST_DIR): shutil.rmtree(PERSIST_DIR)
                     st.session_state.pop("query_engine", None)
-                    _log("본문에서 두뇌 초기화 실행"); st.success("두뇌 파일을 삭제했습니다. 다시 ‘AI 두뇌 준비’를 눌러주세요.")
+                    _log("본문에서 두뇌 초기화 실행")
+                    st.success("두뇌 파일을 삭제했습니다. 다시 ‘AI 두뇌 준비’를 눌러주세요.")
                 except Exception as e:
-                    _log_exception("본문 초기화 실패", e); st.error("초기화 중 오류. 우측 로그/Traceback 확인.")
+                    _log_exception("본문 초기화 실패", e)
+                    st.error("초기화 중 오류. 우측 로그/Traceback 확인.")
 
         with diag_col:
             st.markdown("#### 🧪 연결 진단(빠름)")
@@ -359,25 +408,26 @@ with left:
                         _log_kv("local_cache", f"exists ✅, files={len(os.listdir(PERSIST_DIR))}")
                     else:
                         _log_kv("local_cache", "missing ❌")
+
+                    try:
+                        from src.rag_engine import _normalize_sa, _validate_sa  # 사용 시점 임포트
+                    except Exception:
+                        from rag_engine import _normalize_sa, _validate_sa
+
                     try:
                         sa_norm = _normalize_sa(getattr(settings,"GDRIVE_SERVICE_ACCOUNT_JSON", None))
                         creds = _validate_sa(sa_norm)
                         _log("service_account: valid ✅")
+                        _log_kv("sa_client_email", creds.get("client_email","(unknown)"))
                     except Exception as se:
                         _log_exception("service_account invalid ❌", se)
+
                     folder_id = getattr(settings, "BACKUP_FOLDER_ID", None) or getattr(settings, "GDRIVE_FOLDER_ID", None)
                     _log_kv("folder_id", str(folder_id or "(empty)"))
-                    if not folder_id:
-                        _log("folder_id 비어있음 ❌ — secrets.toml 확인 필요")
-                    if not os.path.exists(PERSIST_DIR) and folder_id:
-                        try:
-                            ok = try_restore_index_from_drive(creds, PERSIST_DIR, folder_id)
-                            _log_kv("drive_restore", "success ✅" if ok else "not found/failed ❌")
-                        except Exception as de:
-                            _log_exception("drive_restore error", de)
                     st.success("진단 완료. 우측 로그/Traceback 확인하세요.")
                 except Exception as e:
-                    _log_exception("연결 진단 자체 실패", e); st.error("연결 진단 중 오류. 우측 로그/Traceback 확인.")
+                    _log_exception("연결 진단 자체 실패", e)
+                    st.error("연결 진단 중 오류. 우측 로그/Traceback 확인.")
         st.stop()
 
     # --- [10-2] 채팅 UI ------------------------------------------------------
