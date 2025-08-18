@@ -1,46 +1,95 @@
-/* assets/style.css — sidebar 항상 표시 버전 */
-
-/* 기본 글꼴/헤더/툴바 */
+/* ===== Global Theme ======================================================= */
 @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;700&display=swap');
-h1 { color: #F7FAFC !important; }
-[data-testid="stCaption"] { color: #A0AEC0 !important; font-size: 1.05rem !important; }
 
-/* 채팅 메세지 카드 */
-[data-testid="stChatMessage"] {
-  background-color: rgba(10, 25, 47, 0.7);
-  border-radius: 10px; padding: 1rem; margin-bottom: 1rem;
+:root{
+  --fg: #F7FAFC;
+  --fg-dim: #E2E8F0;
+  --muted: #A0AEC0;
+  --accent: #9067C6;
+  --accent-2: #A685DB;
+  --panel: rgba(10, 25, 47, 0.70);
+  --panel-2: rgba(45, 55, 72, 0.85);
+  --input-bg: rgba(255,255,255,0.12);
+  --input-border: rgba(255,255,255,0.25);
 }
-[data-testid="stChatMessage"] p, [data-testid="stChatMessage"] li { color: #F7FAFC; }
 
-/* 헤더/툴바 배경 투명화 */
-[data-testid="stHeader"], [data-testid="stToolbar"] { background-color: rgba(0,0,0,0); }
-
-/* ✅ 사이드바는 항상 표시 (이전의 display:none 제거) */
-[data-testid="stSidebar"] { display: block; }
-
-/* 페이지 좌우 패딩 */
-.block-container { padding-top: 1rem; }
-
-/* 버튼 */
-.stButton>button {
-  border-radius: 50px; border: 2px solid #9067C6; background-color: #9067C6; color: #FFF;
-  padding: 12px 28px; font-weight: bold; transition: all .3s ease-in-out;
+/* ===== App Background ===================================================== */
+/* load_css(use_bg=True, bg_path=...) 가 성공하면 배경이미지가 붙고,
+   없어도 폴백 단색 배경으로 글씨 대비가 유지되도록 처리 */
+.stApp{
+  background-color: #0B1220;            /* 폴백(이미지 없을 때) */
+  color: var(--fg);
 }
-.stButton>button:hover { border-color: #A685DB; background-color: transparent; color: #A685DB; }
+h1,h2,h3,h4,h5,h6{ color: var(--fg) !important; }
+[data-testid="stHeader"], [data-testid="stToolbar"]{ background: transparent !important; }
 
-/* 텍스트 입력창 */
-[data-testid="stTextInput"] input {
-  border-radius: 10px; border: 1px solid rgba(255,255,255,.2);
-  background-color: rgba(255,255,255,.1); color: #F7FAFC;
+/* ===== Sidebar (항상 표시) =============================================== */
+[data-testid="stSidebar"]{ display:block !important; }
+[data-testid="stSidebar"] *{ color: var(--fg); }
+
+/* ===== Cards / Chat Bubbles ============================================== */
+[data-testid="stChatMessage"]{
+  background-color: var(--panel);
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: 12px;
+  padding: 1rem; margin-bottom: 1rem;
 }
-[data-testid="stTextInput"] input::placeholder { color: #A0AEC0; }
+[data-testid="stChatMessage"] p, [data-testid="stChatMessage"] li{ color: var(--fg); }
 
-/* 알림 박스 */
-[data-testid="stAlert"] {
-  background-color: rgba(45,55,72,.8); border-radius: .5rem; border: 1px solid rgba(255,255,255,.1);
+/* ===== Buttons ============================================================ */
+.stButton>button{
+  border-radius: 999px;
+  border: 2px solid var(--accent);
+  background-color: var(--accent);
+  color: #fff; font-weight: 700;
+  padding: 10px 20px; transition: .2s ease;
 }
-[data-testid="stAlert"] [data-testid="stMarkdownContainer"] p { color: #F7FAFC; }
+.stButton>button:hover{
+  background-color: transparent; color: var(--accent-2);
+  border-color: var(--accent-2);
+}
 
-/* 라디오/스피너 */
-[data-testid="stRadio"] label p { color: #F7FAFC; }
-[data-testid="stSpinner"] > div { color: #F7FAFC; }
+/* ===== Inputs (텍스트/비밀번호 모두 대비 강화) ============================ */
+[data-testid="stTextInput"] input,
+input[type="text"], input[type="password"], textarea{
+  background-color: var(--input-bg) !important;
+  border: 1px solid var(--input-border) !important;
+  color: var(--fg) !important;
+  caret-color: var(--fg) !important;
+  border-radius: 10px !important;
+}
+[data-testid="stTextInput"] input::placeholder,
+textarea::placeholder{ color: var(--muted) !important; }
+
+/* 비밀번호 입력창(가끔 라이팅 테마에서 보이지 않는 문제 방지) */
+input[type="password"]{
+  -webkit-text-security: disc; /* iOS/사파리 안전표시 */
+  color: var(--fg) !important;
+}
+
+/* Sliders / Radios / Selects 라벨 가독성 */
+[data-testid="stSlider"] *{ color: var(--fg); }
+[data-testid="stRadio"] label p,
+[data-testid="stSelectbox"] label p{ color: var(--fg); }
+
+/* Alerts / Info panels */
+[data-testid="stAlert"]{
+  background: var(--panel-2);
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 10px;
+}
+[data-testid="stAlert"] p{ color: var(--fg); }
+
+/* Progress bar (우리 커스텀 클래스) */
+.gp-wrap{ width:100%; height:28px; border-radius:12px;
+  background: rgba(255,255,255,.12);
+  border:1px solid rgba(255,255,255,.25);
+  position:relative; overflow:hidden; box-shadow: 0 4px 14px rgba(0,0,0,.15);
+}
+.gp-fill{ height:100%; background: linear-gradient(90deg,#7c5ad9,#9067C6); transition: width .25s ease; }
+.gp-label{ position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+  font-weight:800; color:#F7FAFC; text-shadow: 0 1px 2px rgba(0,0,0,.4); font-size:20px; pointer-events:none; }
+.gp-msg{ margin-top:.5rem; color:#F7FAFC; opacity:.9; font-size:0.95rem; }
+
+/* Code blocks in '로그/오류' 패널 */
+pre, code{ color: #CFE3FF !important; }
