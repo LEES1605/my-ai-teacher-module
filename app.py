@@ -1,8 +1,8 @@
 # ===== [01] TOP OF FILE ======================================================
-# Streamlit AI-Teacher — 임포트 에러 회피용 단일파일 버전
-# - UI 유틸(배경/CSS/헤더/진행바) 내장: load_css, safe_render_header, ensure_progress_css, render_progress_bar
-# - src 패키지 임포트 실패 시 루트 모듈로 폴백 (config/prompts/rag_engine/auth)
-# - 다크테마 폴백 CSS 포함(글씨 안 보이는 문제 방지)
+# Streamlit AI-Teacher — 임포트 에러 회피 + 캐시 데코레이터 호환 버전
+# - UI 유틸(배경/CSS/헤더/진행바) 내장
+# - src 패키지 실패 시 루트 모듈 폴백
+# - st.cache_data 미지원 환경에서도 동작하도록 호환 데코레이터 추가
 
 # ===== [02] ENV VARS =========================================================
 import os, time, re, datetime as dt, traceback, base64
@@ -64,15 +64,30 @@ except Exception as e:
             f"[1차:{repr(_imp_err)}]\n[2차:{repr(ee)}]"
         )
 
+# ===== [03.5] STREAMLIT CACHE COMPAT ========================================
+def _compat_cache_data(**kwargs):
+    """
+    st.cache_data(>=1.18) → 있으면 사용
+    st.cache(구버전) → 대체 사용
+    둘 다 없으면 no-op 데코레이터 반환
+    """
+    if hasattr(st, "cache_data"):
+        return st.cache_data(**kwargs)
+    if hasattr(st, "cache"):
+        return st.cache(**kwargs)
+    def _noop_deco(fn):
+        return fn
+    return _noop_deco
+
 # ===== [04] INLINE UI UTILITIES (no external ui.py) ==========================
-@st.cache_data(show_spinner=False)
+@_compat_cache_data(show_spinner=False)
 def _read_text(path_str: str) -> str:
     try:
         return Path(path_str).read_text(encoding="utf-8")
     except Exception:
         return ""
 
-@st.cache_data(show_spinner=False)
+@_compat_cache_data(show_spinner=False)
 def _file_b64(path_str: str) -> str:
     try:
         return base64.b64encode(Path(path_str).read_bytes()).decode()
