@@ -1,14 +1,7 @@
 # ===== [01] TOP OF FILE ======================================================
-# Streamlit AI-Teacher — 가독성 강화 + 관리자 가드 + 시크릿/문자열 호환
-# - UI 유틸(배경/CSS/헤더/진행바) 내장
-# - src 패키지 실패 시 루트 모듈 폴백
-# - st.cache_data 미지원 환경 호환
-# - 관리자 패널은 (is_admin AND admin_mode) 에서만 렌더
-
-# ===== [02] ENV VARS =========================================================
-import os, time, re, datetime as dt, traceback, base64
+# Streamlit AI-Teacher — 관리자 가드 강화 + 단일 '관리자 모드 끄기' + 친절한 에러
+import os, time, re, datetime as dt, traceback, base64, sys
 from pathlib import Path
-import sys
 import streamlit as st
 
 os.environ["STREAMLIT_SERVER_FILE_WATCHER_TYPE"] = "none"
@@ -16,86 +9,61 @@ os.environ["STREAMLIT_RUN_ON_SAVE"] = "false"
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 os.environ["STREAMLIT_SERVER_ENABLE_WEBSOCKET_COMPRESSION"] = "false"
 
-# ===== [03] IMPORTS (with fallback) =========================================
+# ===== [02] IMPORTS (fallback) ==============================================
 APP_DIR = Path(__file__).resolve().parent
 if str(APP_DIR) not in sys.path:
     sys.path.insert(0, str(APP_DIR))
 
-_imp_err = None
 try:
-    # 1차: 표준 src 패키지 경로
     from src.config import settings, PERSIST_DIR
     from src.prompts import EXPLAINER_PROMPT, ANALYST_PROMPT, READER_PROMPT
     from src.rag_engine import (
         get_or_build_index, init_llama_settings, get_text_answer,
-        _normalize_sa, _validate_sa, try_restore_index_from_drive
+        _normalize_sa, _validate_sa
     )
     from src.auth import admin_login_flow
     _IMPORT_MODE = "src"
-except Exception as e:
-    _imp_err = e
-    try:
-        # 2차: 루트 모듈로 폴백
-        import config as _config
-        settings = _config.settings
-        PERSIST_DIR = _config.PERSIST_DIR
+except Exception:
+    import config as _config
+    settings = _config.settings
+    PERSIST_DIR = _config.PERSIST_DIR
 
-        import prompts as _prompts
-        EXPLAINER_PROMPT = _prompts.EXPLAINER_PROMPT
-        ANALYST_PROMPT = _prompts.ANALYST_PROMPT
-        READER_PROMPT  = _prompts.READER_PROMPT
+    import prompts as _prompts
+    EXPLAINER_PROMPT = _prompts.EXPLAINER_PROMPT
+    ANALYST_PROMPT = _prompts.ANALYST_PROMPT
+    READER_PROMPT  = _prompts.READER_PROMPT
 
-        import rag_engine as _rag
-        get_or_build_index = _rag.get_or_build_index
-        init_llama_settings = _rag.init_llama_settings
-        get_text_answer     = _rag.get_text_answer
-        _normalize_sa       = _rag._normalize_sa
-        _validate_sa        = _rag._validate_sa
-        try_restore_index_from_drive = _rag.try_restore_index_from_drive
+    import rag_engine as _rag
+    get_or_build_index = _rag.get_or_build_index
+    init_llama_settings = _rag.init_llama_settings
+    get_text_answer     = _rag.get_text_answer
+    _normalize_sa       = _rag._normalize_sa
+    _validate_sa        = _rag._validate_sa
 
-        import auth as _auth
-        admin_login_flow = _auth.admin_login_flow
+    import auth as _auth
+    admin_login_flow = _auth.admin_login_flow
+    _IMPORT_MODE = "root"
 
-        _IMPORT_MODE = "root"
-    except Exception as ee:
-        raise ImportError(
-            "핵심 모듈 임포트 실패.\n"
-            "1) src/ 패키지 구조를 확인하거나(src/__init__.py 포함)\n"
-            "2) 또는 루트에 config.py, prompts.py, rag_engine.py, auth.py 가 있는지 확인하세요.\n"
-            f"[1차:{repr(_imp_err)}]\n[2차:{repr(ee)}]"
-        )
-
-# ===== [03.5] STREAMLIT CACHE COMPAT ========================================
-def _compat_cache_data(**kwargs):
-    if hasattr(st, "cache_data"): return st.cache_data(**kwargs)
-    if hasattr(st, "cache"):      return st.cache(**kwargs)
-    def _noop(fn): return fn
-    return _noop
-
-# ===== [03.6] SECRET/STRING HELPER ==========================================
+# ===== [03] SECRET/STRING HELPER ============================================
 def _sec(value) -> str:
-    """
-    SecretStr, dict, str 어떤 타입이 와도 문자열을 돌려준다.
-    - SecretStr이면 get_secret_value(), 없으면 그대로 str(value)
-    """
     try:
         from pydantic.types import SecretStr
         if isinstance(value, SecretStr):
             return value.get_secret_value()
     except Exception:
         pass
+    if value is None: return ""
     if isinstance(value, dict):
-        import json
-        return json.dumps(value, ensure_ascii=False)
-    return "" if value is None else str(value)
+        import json; return json.dumps(value, ensure_ascii=False)
+    return str(value)
 
-# ===== [04] INLINE UI UTILITIES =============================================
-@_compat_cache_data(show_spinner=False)
+# ===== [04] UI HELPERS =======================================================
+@st.cache_data(show_spinner=False)
 def _read_text(path_str: str) -> str:
     try: return Path(path_str).read_text(encoding="utf-8")
     except Exception: return ""
 
-@_compat_cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False)
 def _file_b64(path_str: str) -> str:
     try: return base64.b64encode(Path(path_str).read_bytes()).decode()
     except Exception: return ""
@@ -107,87 +75,64 @@ def load_css(file_path: str, use_bg: bool = False, bg_path: str | None = None) -
         b64 = _file_b64(bg_path)
         if b64:
             bg_css = f"""
-            .stApp{{
-              background-image:url("data:image/png;base64,{b64}");
-              background-size:cover;background-position:center;
-              background-repeat:no-repeat;background-attachment:fixed;
-            }}
+            .stApp{{background-image:url("data:image/png;base64,{b64}");
+                    background-size:cover;background-position:center;
+                    background-repeat:no-repeat;background-attachment:fixed;}}
             """
     st.markdown(f"<style>{bg_css}\n{css}</style>", unsafe_allow_html=True)
 
-def safe_render_header(
-    title: str | None = None,
-    subtitle: str | None = None,
-    logo_path: str | None = "assets/academy_logo.png",
-    logo_height_px: int | None = None,
-) -> None:
-    _title = title or getattr(settings, "TITLE_TEXT", "나의 AI 영어 교사")
-    _subtitle = subtitle or getattr(settings, "SUBTITLE_TEXT", "")
-    _logo_h = int(logo_height_px or getattr(settings, "LOGO_HEIGHT_PX", 56))
+def safe_render_header(title: str | None = None, subtitle: str | None = None,
+                       logo_path: str | None = "assets/academy_logo.png",
+                       logo_height_px: int | None = None) -> None:
+    _title = title or getattr(settings,"TITLE_TEXT","나의 AI 영어 교사")
+    _subtitle = subtitle or getattr(settings,"SUBTITLE_TEXT","")
+    _logo_h = int(logo_height_px or getattr(settings,"LOGO_HEIGHT_PX",56))
     logo_b64 = _file_b64(logo_path) if logo_path else ""
-    st.markdown(
-        f"""
-        <style>
-        .aihdr-wrap{{display:flex;align-items:center;gap:14px;margin:6px 0 10px;}}
-        .aihdr-logo{{height:{_logo_h}px;width:auto;object-fit:contain;display:block}}
-        .aihdr-title{{font-size:{getattr(settings,'TITLE_SIZE_REM',2.2)}rem;color:{getattr(settings,'BRAND_COLOR','#F8FAFC')};margin:0}}
-        .aihdr-sub{{color:#C7D2FE;margin:2px 0 0 0;}}
-        </style>
-        """, unsafe_allow_html=True,
-    )
-    left, _right = st.columns([0.85, 0.15])
+    st.markdown(f"""
+    <style>
+      .aihdr-wrap{{display:flex;align-items:center;gap:14px;margin:6px 0 10px;}}
+      .aihdr-logo{{height:{_logo_h}px;width:auto;object-fit:contain;display:block}}
+      .aihdr-title{{font-size:{getattr(settings,'TITLE_SIZE_REM',2.2)}rem;color:{getattr(settings,'BRAND_COLOR','#F8FAFC')};margin:0}}
+      .aihdr-sub{{color:#C7D2FE;margin:2px 0 0 0;}}
+    </style>
+    """, unsafe_allow_html=True)
+    left, _ = st.columns([0.85,0.15])
     with left:
-        st.markdown(
-            f"""
-            <div class="aihdr-wrap">
-              {'<img src="data:image/png;base64,'+logo_b64+'" class="aihdr-logo"/>' if logo_b64 else ''}
-              <div>
-                <h1 class="aihdr-title">{_title}</h1>
-                {f'<div class="aihdr-sub">{_subtitle}</div>' if _subtitle else ''}
-              </div>
-            </div>
-            """, unsafe_allow_html=True,
-        )
+        st.markdown(f"""
+        <div class="aihdr-wrap">
+          {'<img src="data:image/png;base64,'+logo_b64+'" class="aihdr-logo"/>' if logo_b64 else ''}
+          <div>
+            <h1 class="aihdr-title">{_title}</h1>
+            {f'<div class="aihdr-sub">{_subtitle}</div>' if _subtitle else ''}
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
 
 def ensure_progress_css() -> None:
     st.markdown("""
     <style>
       .gp-wrap{ width:100%; height:28px; border-radius:12px;
         background:#1f2937; border:1px solid #334155;
-        position:relative; overflow:hidden; box-shadow:0 4px 14px rgba(0,0,0,.25);
-      }
-      .gp-fill{ height:100%; background:linear-gradient(90deg,#7c5ad9,#9067C6); transition:width .25s ease; }
+        position:relative; overflow:hidden; box-shadow:0 4px 14px rgba(0,0,0,.25);}
+      .gp-fill{ height:100%; background:linear-gradient(90deg,#7c5ad9,#9067C6); transition:width .25s ease;}
       .gp-label{ position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
-        font-weight:800; color:#E8EDFF; text-shadow:0 1px 2px rgba(0,0,0,.5); font-size:18px; pointer-events:none;
-      }
-      .gp-msg{ margin-top:.5rem; color:#E8EDFF; opacity:.9; font-size:0.95rem; }
+        font-weight:800; color:#E8EDFF; text-shadow:0 1px 2px rgba(0,0,0,.5); font-size:18px; pointer-events:none;}
+      .gp-msg{ margin-top:.5rem; color:#E8EDFF; opacity:.9; font-size:0.95rem;}
     </style>
     """, unsafe_allow_html=True)
 
 def render_progress_bar(slot, pct: int) -> None:
     pct = max(0, min(100, int(pct)))
     slot.markdown(
-        f"""
-        <div class="gp-wrap">
-          <div class="gp-fill" style="width:{pct}%"></div>
-          <div class="gp-label">{pct}%</div>
-        </div>
-        """, unsafe_allow_html=True,
+        f"""<div class="gp-wrap"><div class="gp-fill" style="width:{pct}%"></div>
+        <div class="gp-label">{pct}%</div></div>""",
+        unsafe_allow_html=True,
     )
 
 # ===== [05] PAGE SETUP =======================================================
-st.set_page_config(
-    page_title="나의 AI 영어 교사",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
-# admin_mode 기본값(학생은 False)
+st.set_page_config(page_title="나의 AI 영어 교사", layout="wide", initial_sidebar_state="expanded")
 st.session_state.setdefault("admin_mode", False)
-
-# 강제 배경 & 가독성 폴백
-_BG_PATH = "assets/background_book.png"
-load_css("assets/style.css", use_bg=True, bg_path=_BG_PATH)
-
+load_css("assets/style.css", use_bg=True, bg_path="assets/background_book.png")
 ensure_progress_css()
 safe_render_header(subtitle=f"임포트 경로: {_IMPORT_MODE}")
 
@@ -205,24 +150,18 @@ def _log_exception(prefix: str, exc: Exception):
 def _log_kv(k, v): _log(f"{k}: {v}")
 
 # ===== [07] ADMIN ENTRY / GUARD =============================================
-# 상단 관리자 아이콘(항상 표시) → 클릭 시 admin_mode=True
+# 오른쪽 상단 공구 아이콘 → admin_mode=True (항상 표시)
 _, _, _c3 = st.columns([0.82, 0.09, 0.09])
 with _c3:
     if st.button("🛠️", key="admin_icon_top_bar"):
         st.session_state.admin_mode = True
         _log("관리자 버튼 클릭")
 
-# 인증 실행 (패널은 아래 가드로 제어)
-is_admin = admin_login_flow(_sec(getattr(settings, "ADMIN_PASSWORD", "")))
+RAW_ADMIN_PW = _sec(getattr(settings, "ADMIN_PASSWORD", ""))
+HAS_ADMIN_PW = bool(RAW_ADMIN_PW.strip())
 
-# 상단에 '관리자 모드 끄기' 버튼(관리자만)
-if is_admin and st.session_state.get("admin_mode"):
-    _right = st.columns([0.8, 0.2])[1]
-    with _right:
-        if st.button("🔒 관리자 모드 끄기"):
-            st.session_state.admin_mode = False
-            _log("관리자 모드 끔")
-            st.rerun()
+# 비밀번호가 설정되지 않았다면, 관리자 기능 자체를 잠금
+is_admin = admin_login_flow(RAW_ADMIN_PW) if HAS_ADMIN_PW else False
 
 # ===== [08] 2-COLUMN LAYOUT ==================================================
 left, right = st.columns([0.66, 0.34], gap="large")
@@ -233,12 +172,17 @@ with right:
     st.markdown("**Traceback (있다면)**")
     st.code(st.session_state.get("_ui_traceback", "") or "(없음)", language="text")
 
-# ===== [09] SIDEBAR (ADMIN-ONLY CONTENT) ====================================
-# ✅ 학생 화면에서는 관리자 패널이 일절 보이지 않음
+# ===== [09] SIDEBAR (관리자일 때만) ==========================================
 with st.sidebar:
-    if is_admin and st.session_state.get("admin_mode"):
+    if HAS_ADMIN_PW and is_admin and st.session_state.get("admin_mode"):
+        # 🔒 관리자 모드 끄기 — 버튼은 사이드바 딱 한 곳만
+        if st.button("🔒 관리자 모드 끄기"):
+            st.session_state.admin_mode = False
+            _log("관리자 모드 끔")
+            st.rerun()
+
         st.markdown("## ⚙️ 관리자 패널")
-        # 응답 모드
+
         st.markdown("### 🧭 응답 모드")
         st.session_state.setdefault("use_manual_override", False)
         st.session_state["use_manual_override"] = st.checkbox(
@@ -248,7 +192,7 @@ with st.sidebar:
             "수동 모드 선택", ["explainer","analyst","reader"],
             index=["explainer","analyst","reader"].index(st.session_state["manual_prompt_mode"])
         )
-        # RAG/LLM
+
         with st.expander("🤖 RAG/LLM 설정", expanded=False):
             c1, c2, c3 = st.columns(3)
             with c1:
@@ -263,7 +207,7 @@ with st.sidebar:
                     "response_mode", ["compact","refine","tree_summarize"],
                     index=["compact","refine","tree_summarize"].index(st.session_state["response_mode"])
                 )
-        # 도구
+
         with st.expander("🛠️ 관리자 도구", expanded=False):
             if st.button("↺ 두뇌 초기화(인덱스 삭제)"):
                 import shutil
@@ -286,8 +230,7 @@ with left:
             if st.button("🧠 AI 두뇌 준비(복구/연결)"):
                 bar_slot = st.empty()
                 msg_slot = st.empty()
-                key = "_gp_pct"
-                st.session_state[key] = 0
+                key = "_gp_pct"; st.session_state[key] = 0
 
                 def update_pct(p, m=None):
                     st.session_state[key] = max(0, min(100, int(p)))
@@ -297,7 +240,6 @@ with left:
                         _log(m)
 
                 try:
-                    # 0) 시작 메시지
                     update_pct(0, "두뇌 준비를 시작합니다…")
 
                     # 1) LLM 초기화
@@ -308,21 +250,17 @@ with left:
                             embed_model=settings.EMBED_MODEL,
                             temperature=float(st.session_state.get("temperature", 0.0))
                         )
-                        _log("LLM 설정 완료")
-                        update_pct(2, "설정 확인 중…")
+                        _log("LLM 설정 완료"); update_pct(2, "설정 확인 중…")
                     except Exception as ee:
                         public = getattr(ee, "public_msg", str(ee))
                         _log_exception("LLM 초기화 실패", ee)
-                        st.error(f"LLM 초기화 실패: {public}")
-                        st.stop()
+                        st.error(f"LLM 초기화 실패: {public}"); st.stop()
 
                     # 2) 인덱스 로드/복구
                     try:
                         folder_id = getattr(settings, "GDRIVE_FOLDER_ID", None) or getattr(settings, "BACKUP_FOLDER_ID", None)
                         raw_sa = getattr(settings, "GDRIVE_SERVICE_ACCOUNT_JSON", None)
                         persist_dir = PERSIST_DIR
-
-                        # 진단 스냅샷
                         _log_kv("PERSIST_DIR", persist_dir)
                         _log_kv("local_cache", "exists ✅" if os.path.exists(persist_dir) else "missing ❌")
                         _log_kv("folder_id", str(folder_id or "(empty)"))
@@ -348,10 +286,8 @@ with left:
                             response_mode=st.session_state.get("response_mode", getattr(settings,"RESPONSE_MODE","compact")),
                             similarity_top_k=int(st.session_state.get("similarity_top_k", getattr(settings,"SIMILARITY_TOP_K",5)))
                         )
-                        update_pct(100, "두뇌 준비 완료!")
-                        _log("query_engine 생성 완료 ✅")
-                        time.sleep(0.3)
-                        st.rerun()
+                        update_pct(100, "두뇌 준비 완료!"); _log("query_engine 생성 완료 ✅")
+                        time.sleep(0.3); st.rerun()
                     except Exception as ee:
                         public = getattr(ee, "public_msg", str(ee))
                         _log_exception("QueryEngine 생성 실패", ee)
@@ -382,7 +318,6 @@ with left:
                         _log_kv("local_cache", f"exists ✅, files={len(os.listdir(PERSIST_DIR))}")
                     else:
                         _log_kv("local_cache", "missing ❌")
-
                     try:
                         sa_norm = _normalize_sa(getattr(settings,"GDRIVE_SERVICE_ACCOUNT_JSON", None))
                         creds = _validate_sa(sa_norm)
@@ -390,7 +325,6 @@ with left:
                         _log_kv("sa_client_email", creds.get("client_email","(unknown)"))
                     except Exception as se:
                         _log_exception("service_account invalid ❌", se)
-
                     folder_id = getattr(settings, "BACKUP_FOLDER_ID", None) or getattr(settings, "GDRIVE_FOLDER_ID", None)
                     _log_kv("folder_id", str(folder_id or "(empty)"))
                     st.success("진단 완료. 우측 로그/Traceback 확인하세요.")
@@ -414,7 +348,7 @@ with left:
     st.session_state.messages.append({"role":"user","content":prompt})
     with st.chat_message("user"): st.markdown(prompt)
 
-    if is_admin and st.session_state.get("admin_mode") and st.session_state.get("use_manual_override"):
+    if HAS_ADMIN_PW and is_admin and st.session_state.get("admin_mode") and st.session_state.get("use_manual_override"):
         final_mode = st.session_state.get("manual_prompt_mode","explainer"); origin="관리자 수동"
     else:
         final_mode = "explainer" if mode_label.startswith("💬") else "analyst" if mode_label.startswith("🔎") else "reader"
