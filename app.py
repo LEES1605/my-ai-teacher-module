@@ -1,5 +1,5 @@
 # ===== [01] TOP OF FILE ======================================================
-# Streamlit AI-Teacher App (admin quickbar pinned to bottom + student waiting UI)
+# Streamlit AI-Teacher App (admin quickbar pinned to bottom + student waiting UI + drive picker)
 
 # ===== [02] ENV VARS =========================================================
 import os
@@ -144,6 +144,49 @@ if is_admin and not _has_sa_any():
     st.error("GDRIVE 서비스계정 자격증명이 비었습니다. Secrets에 JSON 또는 이메일/프라이빗키를 입력해 주세요.")
     st.caption("APP_GDRIVE_SERVICE_ACCOUNT_JSON 또는 APP_SA_CLIENT_EMAIL / APP_SA_PRIVATE_KEY 사용 가능.")
 
+# ===== [07B] DRIVE FOLDER OVERRIDE (helpers + UI card) =======================
+def _get_effective_gdrive_folder_id() -> str:
+    """UI에서 오버라이드한 폴더 ID가 있으면 그걸, 없으면 settings 기본값."""
+    return st.session_state.get("_gdrive_folder_id") or getattr(settings, "GDRIVE_FOLDER_ID", "")
+
+def _set_effective_gdrive_folder_id(fid: str) -> None:
+    st.session_state["_gdrive_folder_id"] = (fid or "").strip()
+
+def render_drive_check_card():
+    st.subheader("🔌 드라이브 연결 / 폴더")
+    col1, col2, col3 = st.columns([0.5, 0.25, 0.25])
+
+    with col1:
+        fid = _get_effective_gdrive_folder_id()
+        new_fid = st.text_input("폴더 ID", value=fid, placeholder="drive 폴더 URL 마지막 ID")
+        if new_fid != fid:
+            _set_effective_gdrive_folder_id(new_fid)
+        if new_fid:
+            st.markdown(f"[폴더 열기](https://drive.google.com/drive/folders/{new_fid})")
+
+    with col2:
+        ok_sa = True
+        sa_email = "—"
+        try:
+            creds = _validate_sa(_normalize_sa(settings.GDRIVE_SERVICE_ACCOUNT_JSON))
+            sa_email = getattr(creds, "service_account_email", "service account")
+        except Exception:
+            ok_sa = False
+        st.metric("서비스 계정", "정상" if ok_sa else "오류", delta=sa_email)
+
+        if st.button("연결 테스트", key="btn_test_drive"):
+            if not ok_sa:
+                st.error("서비스계정 JSON을 확인하세요.")
+            elif not _get_effective_gdrive_folder_id():
+                st.warning("폴더 ID를 입력하세요.")
+            else:
+                st.success("자격증명 구문 확인 OK (폴더 권한은 실제 작업 시 검증됩니다)")
+
+    with col3:
+        if st.button("저장", type="primary", key="btn_save_drive"):
+            st.success("드라이브 폴더 설정을 저장했습니다. 이후 작업부터 적용됩니다.")
+        st.caption("※ 폴더에 서비스계정 이메일을 **편집자**로 초대해야 업/다운로드 가능해요.")
+
 # ===== [08] AUTO ATTACH / RESTORE ===========================================
 def _auto_attach_or_restore_silently() -> bool:
     try:
@@ -163,7 +206,7 @@ def _auto_attach_or_restore_silently() -> bool:
             return True
 
         creds = _validate_sa(_normalize_sa(settings.GDRIVE_SERVICE_ACCOUNT_JSON))
-        dest = getattr(settings, "BACKUP_FOLDER_ID", None) or settings.GDRIVE_FOLDER_ID
+        dest = getattr(settings, "BACKUP_FOLDER_ID", None) or _get_effective_gdrive_folder_id()
         ok = try_restore_index_from_drive(creds, PERSIST_DIR, dest)
         if ok:
             index = _load_index_from_disk(PERSIST_DIR)
@@ -305,7 +348,7 @@ def _build_or_resume_workflow():
     index = get_or_build_index(
         update_pct=update_pct,
         update_msg=update_msg,
-        gdrive_folder_id=settings.GDRIVE_FOLDER_ID,
+        gdrive_folder_id=_get_effective_gdrive_folder_id(),   # ★ 선택한 폴더 적용
         raw_sa=settings.GDRIVE_SERVICE_ACCOUNT_JSON,
         persist_dir=PERSIST_DIR,
         manifest_path=MANIFEST_PATH,
@@ -332,7 +375,7 @@ def _build_or_resume_workflow():
     if _auto_backup_flag():
         try:
             creds = _validate_sa(_normalize_sa(settings.GDRIVE_SERVICE_ACCOUNT_JSON))
-            dest = getattr(settings, "BACKUP_FOLDER_ID", None) or settings.GDRIVE_FOLDER_ID
+            dest = getattr(settings, "BACKUP_FOLDER_ID", None) or _get_effective_gdrive_folder_id()  # ★ 적용
             with st.spinner("⬆️ 인덱스 저장본을 드라이브로 자동 백업 중..."):
                 _, file_name = export_brain_to_drive(creds, PERSIST_DIR, dest, filename=None)
             st.success(f"자동 백업 완료! 파일명: {file_name}")
@@ -363,12 +406,16 @@ def render_admin_panels():
             mode_sel = st.selectbox(
                 "response_mode", ["compact","refine","tree_summarize"],
                 index=["compact","refine","tree_summarize"].index(st.session_state["response_mode"]),
+                help="compact: 빠름/경제적 • refine: 초안→보강(정확성↑) • tree_summarize: 다문서 종합/장문 요약"
             )
         if st.button("적용"):
             st.session_state["similarity_top_k"] = int(k)
             st.session_state["temperature"] = float(temp)
             st.session_state["response_mode"] = str(mode_sel)
             st.success("RAG/LLM 설정이 저장되었습니다. (다음 쿼리부터 반영)")
+
+    # 드라이브 카드 (폴더 선택/연결 테스트)
+    render_drive_check_card()
 
     # === 최적화 프리셋 + 수동 조정
     with st.expander("🧩 최적화 설정(전처리/청킹/중복제거)", expanded=True):
@@ -449,7 +496,7 @@ def render_admin_panels():
             if st.button("⬆️ 두뇌 저장본 드라이브로 내보내기(날짜 포함)"):
                 try:
                     creds = _validate_sa(_normalize_sa(settings.GDRIVE_SERVICE_ACCOUNT_JSON))
-                    dest = getattr(settings, "BACKUP_FOLDER_ID", None) or settings.GDRIVE_FOLDER_ID
+                    dest = getattr(settings, "BACKUP_FOLDER_ID", None) or _get_effective_gdrive_folder_id()
                     with st.spinner("두뇌를 ZIP(날짜 포함)으로 묶고 드라이브에 업로드 중..."):
                         _, file_name = export_brain_to_drive(creds, PERSIST_DIR, dest, filename=None)
                     st.success(f"업로드 완료! 파일명: {file_name}")
@@ -462,7 +509,7 @@ def render_admin_panels():
             if st.button("⬇️ 드라이브에서 최신 백업 가져오기"):
                 try:
                     creds = _validate_sa(_normalize_sa(settings.GDRIVE_SERVICE_ACCOUNT_JSON))
-                    dest = getattr(settings, "BACKUP_FOLDER_ID", None) or settings.GDRIVE_FOLDER_ID
+                    dest = getattr(settings, "BACKUP_FOLDER_ID", None) or _get_effective_gdrive_folder_id()
                     with st.spinner("드라이브에서 최신 백업 ZIP을 내려받아 복원 중..."):
                         ok = try_restore_index_from_drive(creds, PERSIST_DIR, dest)
                     if ok: st.success("복원 완료! 아래에서 두뇌를 연결하거나 대화를 시작하세요.")
@@ -496,7 +543,6 @@ def render_admin_quickbar():
 
 def render_student_waiting_view():
     st.info("두뇌 준비 중입니다. 관리자가 준비를 완료하면 채팅이 활성화됩니다.")
-    # 채팅창 느낌 유지: 안내 말풍선 + 비활성 입력(텍스트 입력으로 대체)
     with st.chat_message("assistant"):
         st.markdown("안녕하세요! 곧 수업을 시작할게요. 조금만 기다려 주세요 😊")
     st.text_input("채팅은 준비 완료 후 사용 가능합니다.", disabled=True, placeholder="(잠시만 기다려 주세요)")
