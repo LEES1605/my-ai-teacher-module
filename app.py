@@ -1,8 +1,9 @@
 # ===== [01] TOP OF FILE ======================================================
-# Streamlit AI-Teacher — 가독성 강화 + 관리자 가드(인증 전 완전 비표시) 버전
+# Streamlit AI-Teacher — 가독성 강화 + 관리자 가드 + 시크릿/문자열 호환
 # - UI 유틸(배경/CSS/헤더/진행바) 내장
 # - src 패키지 실패 시 루트 모듈 폴백
-# - 다크 테마 폴백 + 사이드바 고대비 + 입력칸/본문 색 분리
+# - st.cache_data 미지원 환경 호환
+# - 관리자 패널은 (is_admin AND admin_mode) 에서만 렌더
 
 # ===== [02] ENV VARS =========================================================
 import os, time, re, datetime as dt, traceback, base64
@@ -70,6 +71,23 @@ def _compat_cache_data(**kwargs):
     if hasattr(st, "cache"):      return st.cache(**kwargs)
     def _noop(fn): return fn
     return _noop
+
+# ===== [03.6] SECRET/STRING HELPER ==========================================
+def _sec(value) -> str:
+    """
+    SecretStr, dict, str 어떤 타입이 와도 문자열을 돌려준다.
+    - SecretStr이면 get_secret_value(), 없으면 그대로 str(value)
+    """
+    try:
+        from pydantic.types import SecretStr
+        if isinstance(value, SecretStr):
+            return value.get_secret_value()
+    except Exception:
+        pass
+    if isinstance(value, dict):
+        import json
+        return json.dumps(value, ensure_ascii=False)
+    return "" if value is None else str(value)
 
 # ===== [04] INLINE UI UTILITIES =============================================
 @_compat_cache_data(show_spinner=False)
@@ -163,59 +181,12 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+# admin_mode 기본값(학생은 False)
+st.session_state.setdefault("admin_mode", False)
 
-# 배경/스타일 로딩 + 가독성 폴백 + 사이드바 고대비
+# 강제 배경 & 가독성 폴백
 _BG_PATH = "assets/background_book.png"
 load_css("assets/style.css", use_bg=True, bg_path=_BG_PATH)
-
-st.markdown("""
-<style>
-/* 전체 폴백 다크 */
-.stApp{ background:#0b1220 !important; color:#E8EDFF !important; }
-h1,h2,h3,h4,h5,h6{ color:#F8FAFC !important; }
-
-/* 헤더/툴바 투명 */
-[data-testid="stHeader"],[data-testid="stToolbar"]{ background:transparent !important; }
-
-/* ===== 사이드바 고대비 ===== */
-[data-testid="stSidebar"]{ display:block!important; background:#0f172a !important; border-right:1px solid #334155; }
-[data-testid="stSidebar"] *{ color:#E8EDFF !important; }
-[data-testid="stSidebar"] .stButton>button{ background:#334155 !important; border:1px solid #475569 !important; }
-
-/* ===== 입력칸(텍스트/비번/에어리어): 본문 대비 ↑ ===== */
-[data-testid="stTextInput"] input, input[type="text"], input[type="password"], textarea{
-  background:#111827 !important;    /* 더 어두운 입력칸 */
-  border:1px solid #374151 !important;
-  color:#F9FAFB !important; caret-color:#F9FAFB !important;
-  border-radius:10px !important;
-}
-[data-testid="stTextInput"] input::placeholder, textarea::placeholder{ color:#9CA3AF !important; }
-
-/* 알림/카드 톤 */
-[data-testid="stAlert"]{ background:#111827 !important; border:1px solid #334155 !important; }
-[data-testid="stAlert"] p{ color:#E8EDFF !important; }
-
-/* 채팅 버블(본문 내용 가독성) */
-[data-testid="stChatMessage"]{
-  background:#0f172a !important; border:1px solid #273449 !important;
-  border-radius:12px; padding:1rem; margin-bottom:1rem;
-}
-[data-testid="stChatMessage"] p, [data-testid="stChatMessage"] li{ color:#E8EDFF !important; }
-
-/* 버튼 기본 */
-.stButton>button{
-  border-radius:999px; border:1px solid #6b7280;
-  background:#4f46e5; color:#fff; font-weight:700; padding:10px 18px;
-}
-.stButton>button:hover{ background:#4338ca; }
-
-/* 라디오/슬라이더 라벨 색 고정 */
-[data-testid="stRadio"] label p, [data-testid="stSlider"] *{ color:#E8EDFF !important; }
-
-/* 우측 로그 박스 코드 색 */
-pre, code{ color:#CFE3FF !important; }
-</style>
-""", unsafe_allow_html=True)
 
 ensure_progress_css()
 safe_render_header(subtitle=f"임포트 경로: {_IMPORT_MODE}")
@@ -234,7 +205,7 @@ def _log_exception(prefix: str, exc: Exception):
 def _log_kv(k, v): _log(f"{k}: {v}")
 
 # ===== [07] ADMIN ENTRY / GUARD =============================================
-# 상단 관리자 아이콘만 항상 보이게 (패널은 인증 전 완전 숨김)
+# 상단 관리자 아이콘(항상 표시) → 클릭 시 admin_mode=True
 _, _, _c3 = st.columns([0.82, 0.09, 0.09])
 with _c3:
     if st.button("🛠️", key="admin_icon_top_bar"):
@@ -242,7 +213,16 @@ with _c3:
         _log("관리자 버튼 클릭")
 
 # 인증 실행 (패널은 아래 가드로 제어)
-is_admin = admin_login_flow(getattr(settings, "ADMIN_PASSWORD", "") or "")
+is_admin = admin_login_flow(_sec(getattr(settings, "ADMIN_PASSWORD", "")))
+
+# 상단에 '관리자 모드 끄기' 버튼(관리자만)
+if is_admin and st.session_state.get("admin_mode"):
+    _right = st.columns([0.8, 0.2])[1]
+    with _right:
+        if st.button("🔒 관리자 모드 끄기"):
+            st.session_state.admin_mode = False
+            _log("관리자 모드 끔")
+            st.rerun()
 
 # ===== [08] 2-COLUMN LAYOUT ==================================================
 left, right = st.columns([0.66, 0.34], gap="large")
@@ -254,9 +234,9 @@ with right:
     st.code(st.session_state.get("_ui_traceback", "") or "(없음)", language="text")
 
 # ===== [09] SIDEBAR (ADMIN-ONLY CONTENT) ====================================
-# ✅ 관리자 인증 전에는 사이드바 관리자 패널 '전부 미표시'
+# ✅ 학생 화면에서는 관리자 패널이 일절 보이지 않음
 with st.sidebar:
-    if is_admin:
+    if is_admin and st.session_state.get("admin_mode"):
         st.markdown("## ⚙️ 관리자 패널")
         # 응답 모드
         st.markdown("### 🧭 응답 모드")
@@ -293,9 +273,6 @@ with st.sidebar:
                     _log("두뇌 초기화 완료"); st.success("두뇌 파일 삭제됨. 메인에서 다시 준비하세요.")
                 except Exception as e:
                     _log_exception("두뇌 초기화 실패", e); st.error("초기화 중 오류. 우측 로그/Traceback 확인.")
-    else:
-        # 관리자 전용 요소 완전 미표시 (빈 사이드바 유지)
-        pass
 
 # ===== [10] MAIN: 강의 준비 & 진단 & 채팅 ===================================
 with left:
@@ -323,10 +300,10 @@ with left:
                     # 0) 시작 메시지
                     update_pct(0, "두뇌 준비를 시작합니다…")
 
-                    # 1) LLM 초기화(여기서 실패하는 경우가 많음)
+                    # 1) LLM 초기화
                     try:
                         init_llama_settings(
-                            api_key=settings.GEMINI_API_KEY.get_secret_value(),
+                            api_key=_sec(getattr(settings, "GEMINI_API_KEY", "")),
                             llm_model=settings.LLM_MODEL,
                             embed_model=settings.EMBED_MODEL,
                             temperature=float(st.session_state.get("temperature", 0.0))
@@ -334,7 +311,6 @@ with left:
                         _log("LLM 설정 완료")
                         update_pct(2, "설정 확인 중…")
                     except Exception as ee:
-                        # rag_engine의 사용자친화 예외라면 public_msg 노출
                         public = getattr(ee, "public_msg", str(ee))
                         _log_exception("LLM 초기화 실패", ee)
                         st.error(f"LLM 초기화 실패: {public}")
@@ -346,8 +322,9 @@ with left:
                         raw_sa = getattr(settings, "GDRIVE_SERVICE_ACCOUNT_JSON", None)
                         persist_dir = PERSIST_DIR
 
-                        # 진단 스냅샷(실패 시 우측에 함께 보이도록 선기록)
+                        # 진단 스냅샷
                         _log_kv("PERSIST_DIR", persist_dir)
+                        _log_kv("local_cache", "exists ✅" if os.path.exists(persist_dir) else "missing ❌")
                         _log_kv("folder_id", str(folder_id or "(empty)"))
                         _log_kv("has_service_account", "yes" if raw_sa else "no")
 
@@ -368,8 +345,8 @@ with left:
                     # 3) QueryEngine 생성
                     try:
                         st.session_state.query_engine = index.as_query_engine(
-                            response_mode=st.session_state.get("response_mode", getattr(settings, "RESPONSE_MODE", "compact")),
-                            similarity_top_k=int(st.session_state.get("similarity_top_k", getattr(settings, "SIMILARITY_TOP_K", 5)))
+                            response_mode=st.session_state.get("response_mode", getattr(settings,"RESPONSE_MODE","compact")),
+                            similarity_top_k=int(st.session_state.get("similarity_top_k", getattr(settings,"SIMILARITY_TOP_K",5)))
                         )
                         update_pct(100, "두뇌 준비 완료!")
                         _log("query_engine 생성 완료 ✅")
@@ -382,7 +359,6 @@ with left:
                         st.stop()
 
                 except Exception as e:
-                    # 최상위 가드 — 어떤 예외라도 우측 Traceback은 반드시 찍힌다
                     _log_exception("예상치 못한 오류", e)
                     st.error("두뇌 준비 중 알 수 없는 오류. 우측 로그/Traceback을 확인하세요.")
                     st.stop()
@@ -392,11 +368,9 @@ with left:
                 try:
                     if os.path.exists(PERSIST_DIR): shutil.rmtree(PERSIST_DIR)
                     st.session_state.pop("query_engine", None)
-                    _log("본문에서 두뇌 초기화 실행")
-                    st.success("두뇌 파일을 삭제했습니다. 다시 ‘AI 두뇌 준비’를 눌러주세요.")
+                    _log("본문에서 두뇌 초기화 실행"); st.success("두뇌 파일을 삭제했습니다. 다시 ‘AI 두뇌 준비’를 눌러주세요.")
                 except Exception as e:
-                    _log_exception("본문 초기화 실패", e)
-                    st.error("초기화 중 오류. 우측 로그/Traceback 확인.")
+                    _log_exception("본문 초기화 실패", e); st.error("초기화 중 오류. 우측 로그/Traceback 확인.")
 
         with diag_col:
             st.markdown("#### 🧪 연결 진단(빠름)")
@@ -408,11 +382,6 @@ with left:
                         _log_kv("local_cache", f"exists ✅, files={len(os.listdir(PERSIST_DIR))}")
                     else:
                         _log_kv("local_cache", "missing ❌")
-
-                    try:
-                        from src.rag_engine import _normalize_sa, _validate_sa  # 사용 시점 임포트
-                    except Exception:
-                        from rag_engine import _normalize_sa, _validate_sa
 
                     try:
                         sa_norm = _normalize_sa(getattr(settings,"GDRIVE_SERVICE_ACCOUNT_JSON", None))
@@ -445,7 +414,7 @@ with left:
     st.session_state.messages.append({"role":"user","content":prompt})
     with st.chat_message("user"): st.markdown(prompt)
 
-    if is_admin and st.session_state.get("use_manual_override"):
+    if is_admin and st.session_state.get("admin_mode") and st.session_state.get("use_manual_override"):
         final_mode = st.session_state.get("manual_prompt_mode","explainer"); origin="관리자 수동"
     else:
         final_mode = "explainer" if mode_label.startswith("💬") else "analyst" if mode_label.startswith("🔎") else "reader"
