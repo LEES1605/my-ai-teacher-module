@@ -23,13 +23,15 @@ def _b64_image(path: str) -> str | None:
 def load_css(css_path: str = "assets/style.css", use_bg: bool = True, bg_path: str | None = None) -> None:
     """
     앱 공통 CSS를 주입하고(파일 없으면 건너뜀),
-    use_bg=True면 고정 배경 이미지를 반투명으로 깔아요.
+    use_bg=True면 고정 배경 이미지를 반투명으로 깝니다.
     """
     css = _read_text(css_path)
     extra = ""
 
     if use_bg:
-        bg_path = bg_path or settings.BG_IMAGE_PATH
+        bg_path = bg_path or getattr(settings, "BG_IMAGE_PATH", None) or getattr(settings, "BG_IMAGE_PATH", None)
+        if not bg_path:
+            bg_path = "assets/background_book.png"
         b64 = _b64_image(bg_path)
         if b64:
             extra = f"""
@@ -69,7 +71,7 @@ def load_css(css_path: str = "assets/style.css", use_bg: bool = True, bg_path: s
             color:#6b7280; font-size:.95rem; margin:0;
         }}
 
-        /* 진행바 영역 sticky */
+        /* 진행바 영역 sticky (필요 시 사용) */
         .progress-wrap {{ position: sticky; top: 0; z-index: 5; background: transparent; }}
         {extra}
         </style>
@@ -96,10 +98,3 @@ def render_header(title: str, subtitle: str | None = None, logo_path: str = "ass
         """,
         unsafe_allow_html=True,
     )
-
-# ---------- 진행바 ----------
-def render_progress_bar(pct: int, text: str | None = None):
-    """pct: 0~100"""
-    if text:
-        st.write(text)
-    return st.progress(max(0, min(100, int(pct))))
