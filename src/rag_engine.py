@@ -157,7 +157,7 @@ def get_or_build_index(
     _emit(update_pct, update_msg, 65, "복구됨 → 로드합니다…")
     return _load_index_from_disk(persist_dir)
 
-# ===== [08] Drive 복구(데모/가이드 메시지) ===================================
+# ===== [08] Drive 복구(실제 다운로드 구현) ===================================
 def try_restore_index_from_drive(
     creds: dict,
     persist_dir: str | Path,
@@ -165,19 +165,109 @@ def try_restore_index_from_drive(
     update_msg: Callable[[str], None] | None = None,
 ) -> tuple[bool, str | None]:
     """
-    실제 구현은 Google Drive API로 folder_id 하위 파일을 persist_dir로 내려받아야 합니다.
-    여기서는 의존성 없이 '진단 메시지/가이드'만 제공. (ok, note) 형태로 반환.
+    Google Drive v3 API를 사용해 folder_id 하위의 파일/폴더를 재귀적으로 내려받아
+    persist_dir에 동일한 구조로 복구합니다.
+    - creds: 서비스 계정 JSON(dict)
+    - persist_dir: 로컬 저장 경로
+    - folder_id: 백업 폴더 ID
+    반환: (성공여부, 참고메모)
     """
+    from pathlib import Path
+    import io
+    from google.oauth2.service_account import Credentials
+    from googleapiclient.discovery import build
+    from googleapiclient.http import MediaIoBaseDownload
+
+    def _emit_msg(m: str):
+        try:
+            if update_msg: update_msg(m)
+        except Exception:
+            pass
+
     try:
         if not folder_id or not str(folder_id).strip():
             raise FolderIdMissing("폴더 ID가 비어 있습니다.")
         if "client_email" not in creds:
             raise ServiceAccountInvalid("서비스 계정 키에 client_email이 없습니다.")
 
-        Path(persist_dir).mkdir(parents=True, exist_ok=True)
-        _emit(None, update_msg, msg="(데모) Drive 복구 함수가 호출되었습니다 — 실제 다운로드 로직을 연결하세요.")
-        # 실제 복구를 안 했으므로 일반적으로 False를 리턴
-        return (_index_exists(persist_dir), "현재 앱에는 Drive에서 파일을 내려받는 코드가 연결되어 있지 않습니다.")
+        # [08-1] 자격증명/드라이브 클라이언트
+        scopes = ["https://www.googleapis.com/auth/drive.readonly"]
+        credentials = Credentials.from_service_account_info(creds, scopes=scopes)
+        svc = build("drive", "v3", credentials=credentials, cache_discovery=False)
+
+        # [08-2] 헬퍼: 폴더/파일 구분 및 리스트
+        def _list_children(fid: str) -> list[dict]:
+            files = []
+            page_token = None
+            query = f"'{fid}' in parents and trashed=false"
+            while True:
+                res = svc.files().list(
+                    q=query,
+                    spaces="drive",
+                    fields="nextPageToken, files(id, name, mimeType, size)",
+                    pageToken=page_token,
+                ).execute()
+                files.extend(res.get("files", []))
+                page_token = res.get("nextPageToken")
+                if not page_token:
+                    break
+            return files
+
+        def _is_folder(item: dict) -> bool:
+            return item.get("mimeType") == "application/vnd.google-apps.folder"
+
+        # [08-3] 헬퍼: Google Docs류는 export, 일반 파일은 download
+        # 인덱스는 보통 일반 파일(json, pkl, bin, txt 등)이므로 우선 일반 다운로드에 초점
+        GOOGLE_DOC_EXPORT = {
+            "application/vnd.google-apps.document": ("application/pdf", ".pdf"),
+            "application/vnd.google-apps.spreadsheet": ("text/csv", ".csv"),
+            "application/vnd.google-apps.presentation": ("application/pdf", ".pdf"),
+        }
+
+        def _download_file(file_id: str, name: str, mime_type: str, out_path: Path):
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            if mime_type in GOOGLE_DOC_EXPORT:
+                export_mime, ext = GOOGLE_DOC_EXPORT[mime_type]
+                request = svc.files().export_media(fileId=file_id, mimeType=export_mime)
+                fh = io.FileIO(str(out_path.with_suffix(ext)), "wb")
+            else:
+                request = svc.files().get_media(fileId=file_id)
+                fh = io.FileIO(str(out_path), "wb")
+            downloader = MediaIoBaseDownload(fh, request)
+            done = False
+            while not done:
+                _status, done = downloader.next_chunk()
+            fh.close()
+
+        # [08-4] 재귀 내려받기
+        persist_dir = Path(persist_dir)
+        persist_dir.mkdir(parents=True, exist_ok=True)
+        downloaded_count = 0
+
+        def _walk_and_download(cur_folder_id: str, dst_dir: Path):
+            nonlocal downloaded_count
+            items = _list_children(cur_folder_id)
+            for it in items:
+                fname = it.get("name", "unnamed")
+                fid   = it.get("id")
+                mime  = it.get("mimeType", "")
+                if _is_folder(it):
+                    _emit_msg(f"폴더: {fname} 내려받는 중…")
+                    _walk_and_download(fid, dst_dir / fname)
+                else:
+                    _emit_msg(f"파일: {fname} 내려받는 중…")
+                    _download_file(fid, fname, mime, dst_dir / fname)
+                    downloaded_count += 1
+
+        _emit_msg("Drive에서 백업 파일을 내려받는 중…")
+        _walk_and_download(folder_id, persist_dir)
+
+        if downloaded_count == 0:
+            # 폴더는 있었지만 내부가 비었거나 권한 부족
+            return (False, "폴더에 다운로드할 파일이 없거나 접근 권한이 부족합니다.")
+        _emit_msg(f"다운로드 완료: {downloaded_count}개 파일")
+        return (True, f"{downloaded_count} files downloaded")
+
     except RAGEngineError:
         raise
     except Exception as e:
