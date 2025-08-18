@@ -1,95 +1,179 @@
-/* ===== Global Theme ======================================================= */
-@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;700&display=swap');
+# ===== [01] TOP OF FILE ======================================================
+# Streamlit AI-Teacher (sidebar 항상 표시 + 관리자 응답모드 수동/자동 + 오류로그 슬롯)
 
-:root{
-  --fg: #F7FAFC;
-  --fg-dim: #E2E8F0;
-  --muted: #A0AEC0;
-  --accent: #9067C6;
-  --accent-2: #A685DB;
-  --panel: rgba(10, 25, 47, 0.70);
-  --panel-2: rgba(45, 55, 72, 0.85);
-  --input-bg: rgba(255,255,255,0.12);
-  --input-border: rgba(255,255,255,0.25);
-}
+# ===== [02] ENV VARS =========================================================
+import os, time, re
+import streamlit as st
 
-/* ===== App Background ===================================================== */
-/* load_css(use_bg=True, bg_path=...) 가 성공하면 배경이미지가 붙고,
-   없어도 폴백 단색 배경으로 글씨 대비가 유지되도록 처리 */
-.stApp{
-  background-color: #0B1220;            /* 폴백(이미지 없을 때) */
-  color: var(--fg);
-}
-h1,h2,h3,h4,h5,h6{ color: var(--fg) !important; }
-[data-testid="stHeader"], [data-testid="stToolbar"]{ background: transparent !important; }
+os.environ["STREAMLIT_SERVER_FILE_WATCHER_TYPE"] = "none"
+os.environ["STREAMLIT_RUN_ON_SAVE"] = "false"
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+os.environ["STREAMLIT_SERVER_ENABLE_WEBSOCKET_COMPRESSION"] = "false"
 
-/* ===== Sidebar (항상 표시) =============================================== */
-[data-testid="stSidebar"]{ display:block !important; }
-[data-testid="stSidebar"] *{ color: var(--fg); }
+# ===== [03] IMPORTS ==========================================================
+from src.config import settings, APP_DATA_DIR, PERSIST_DIR
+from src.ui import load_css, safe_render_header, ensure_progress_css, render_progress_bar
+from src.prompts import EXPLAINER_PROMPT, ANALYST_PROMPT, READER_PROMPT
+from src.rag_engine import get_or_build_index, init_llama_settings, get_text_answer
+from src.auth import admin_login_flow
 
-/* ===== Cards / Chat Bubbles ============================================== */
-[data-testid="stChatMessage"]{
-  background-color: var(--panel);
-  border: 1px solid rgba(255,255,255,0.10);
-  border-radius: 12px;
-  padding: 1rem; margin-bottom: 1rem;
-}
-[data-testid="stChatMessage"] p, [data-testid="stChatMessage"] li{ color: var(--fg); }
+# ===== [04] PAGE SETUP =======================================================
+st.set_page_config(page_title="나의 AI 영어 교사",
+                   layout="wide",
+                   initial_sidebar_state="expanded")   # ← 사이드바 기본 확장
 
-/* ===== Buttons ============================================================ */
-.stButton>button{
-  border-radius: 999px;
-  border: 2px solid var(--accent);
-  background-color: var(--accent);
-  color: #fff; font-weight: 700;
-  padding: 10px 20px; transition: .2s ease;
-}
-.stButton>button:hover{
-  background-color: transparent; color: var(--accent-2);
-  border-color: var(--accent-2);
-}
+load_css("assets/style.css",
+         use_bg=settings.USE_BG_IMAGE,
+         bg_path="assets/background_book.png")
+ensure_progress_css()
+safe_render_header()
 
-/* ===== Inputs (텍스트/비밀번호 모두 대비 강화) ============================ */
-[data-testid="stTextInput"] input,
-input[type="text"], input[type="password"], textarea{
-  background-color: var(--input-bg) !important;
-  border: 1px solid var(--input-border) !important;
-  color: var(--fg) !important;
-  caret-color: var(--fg) !important;
-  border-radius: 10px !important;
-}
-[data-testid="stTextInput"] input::placeholder,
-textarea::placeholder{ color: var(--muted) !important; }
+# ===== [05] ADMIN TOOLS ======================================================
+# 상단 관리자 아이콘
+_, _, c3 = st.columns([0.8, 0.1, 0.1])
+with c3:
+    if st.button("🛠️", key="admin_icon_top_bar"):
+        st.session_state.admin_mode = True
 
-/* 비밀번호 입력창(가끔 라이팅 테마에서 보이지 않는 문제 방지) */
-input[type="password"]{
-  -webkit-text-security: disc; /* iOS/사파리 안전표시 */
-  color: var(--fg) !important;
-}
+# 관리자 인증
+is_admin = admin_login_flow(settings.ADMIN_PASSWORD or "")
 
-/* Sliders / Radios / Selects 라벨 가독성 */
-[data-testid="stSlider"] *{ color: var(--fg); }
-[data-testid="stRadio"] label p,
-[data-testid="stSelectbox"] label p{ color: var(--fg); }
+if is_admin:
+    with st.sidebar:
+        st.markdown("### 🧭 응답 모드 (자동/수동)")
+        st.session_state.setdefault("use_manual_override", False)
+        use_manual = st.checkbox("수동 모드 사용", value=st.session_state["use_manual_override"])
+        st.session_state["use_manual_override"] = use_manual
 
-/* Alerts / Info panels */
-[data-testid="stAlert"]{
-  background: var(--panel-2);
-  border: 1px solid rgba(255,255,255,0.12);
-  border-radius: 10px;
-}
-[data-testid="stAlert"] p{ color: var(--fg); }
+        st.session_state.setdefault("manual_prompt_mode", "explainer")
+        manual_mode = st.selectbox("수동 모드 선택",
+                                   ["explainer", "analyst", "reader"],
+                                   index=["explainer","analyst","reader"].index(
+                                       st.session_state["manual_prompt_mode"]))
+        st.session_state["manual_prompt_mode"] = manual_mode
 
-/* Progress bar (우리 커스텀 클래스) */
-.gp-wrap{ width:100%; height:28px; border-radius:12px;
-  background: rgba(255,255,255,.12);
-  border:1px solid rgba(255,255,255,.25);
-  position:relative; overflow:hidden; box-shadow: 0 4px 14px rgba(0,0,0,.15);
-}
-.gp-fill{ height:100%; background: linear-gradient(90deg,#7c5ad9,#9067C6); transition: width .25s ease; }
-.gp-label{ position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
-  font-weight:800; color:#F7FAFC; text-shadow: 0 1px 2px rgba(0,0,0,.4); font-size:20px; pointer-events:none; }
-.gp-msg{ margin-top:.5rem; color:#F7FAFC; opacity:.9; font-size:0.95rem; }
+    with st.sidebar.expander("⚙️ 고급 RAG/LLM 설정", expanded=False):
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.session_state.setdefault("similarity_top_k", settings.SIMILARITY_TOP_K)
+            k = st.slider("similarity_top_k", 1, 12, st.session_state["similarity_top_k"])
+        with col2:
+            st.session_state.setdefault("temperature", 0.0)
+            temp = st.slider("LLM temperature", 0.0, 1.0,
+                             float(st.session_state["temperature"]), 0.05)
+        with col3:
+            st.session_state.setdefault("response_mode", settings.RESPONSE_MODE)
+            mode_sel = st.selectbox("response_mode",
+                                    ["compact","refine","tree_summarize"],
+                                    index=["compact","refine","tree_summarize"].index(
+                                        st.session_state["response_mode"]))
 
-/* Code blocks in '로그/오류' 패널 */
-pre, code{ color: #CFE3FF !important; }
+        if st.button("적용", key="apply_rag"):
+            st.session_state["similarity_top_k"] = k
+            st.session_state["temperature"] = temp
+            st.session_state["response_mode"] = mode_sel
+            st.success("RAG/LLM 설정이 저장되었습니다.")
+
+    with st.sidebar.expander("🛠️ 관리자 도구", expanded=False):
+        if st.button("📥 강의 자료 다시 불러오기 (두뇌 초기화)"):
+            import shutil
+            if os.path.exists(PERSIST_DIR):
+                shutil.rmtree(PERSIST_DIR)
+            st.session_state.pop("query_engine", None)
+            st.success("두뇌 파일이 초기화되었습니다.")
+
+# ===== [06] ERROR/LOG SLOT ===================================================
+st.session_state.setdefault("_error_log", [])
+with st.sidebar.expander("🚨 오류 / 실패 로그", expanded=True):
+    if not st.session_state["_error_log"]:
+        st.write("아직 오류 없음.")
+    else:
+        for msg in st.session_state["_error_log"][-5:]:
+            st.error(msg)
+
+# ===== [07] MAIN WORKFLOW ====================================================
+def main():
+    # 두뇌 준비 안됐을 때
+    if "query_engine" not in st.session_state:
+        st.info("AI 교사를 시작하려면 아래 버튼을 누르세요.")
+
+        if st.button("🧠 AI 두뇌 준비 시작하기"):
+            bar_slot = st.empty(); msg_slot = st.empty()
+            state_key = "_gp_pct"; st.session_state[state_key] = 0
+
+            def update_pct(p, m=None):
+                st.session_state[state_key] = max(0, min(100, int(p)))
+                render_progress_bar(bar_slot, st.session_state[state_key])
+                if m: msg_slot.markdown(m)
+
+            def update_msg(m): msg_slot.markdown(m)
+
+            update_msg("두뇌 준비를 시작합니다…")
+
+            try:
+                init_llama_settings(api_key=settings.GEMINI_API_KEY.get_secret_value(),
+                                    llm_model=settings.LLM_MODEL,
+                                    embed_model=settings.EMBED_MODEL,
+                                    temperature=float(st.session_state.get("temperature", 0.0)))
+
+                index = get_or_build_index(update_pct=update_pct,
+                                           update_msg=update_msg,
+                                           gdrive_folder_id=settings.GDRIVE_FOLDER_ID,
+                                           raw_sa=settings.GDRIVE_SERVICE_ACCOUNT_JSON,
+                                           persist_dir=PERSIST_DIR,
+                                           manifest_path=settings.MANIFEST_PATH)
+
+                st.session_state.query_engine = index.as_query_engine(
+                    response_mode=st.session_state.get("response_mode", settings.RESPONSE_MODE),
+                    similarity_top_k=int(st.session_state.get("similarity_top_k", settings.SIMILARITY_TOP_K)))
+                update_pct(100, "완료!")
+                time.sleep(0.5)
+                st.rerun()
+            except Exception as e:
+                st.session_state["_error_log"].append(repr(e))
+                st.error(f"두뇌 준비 실패: {e}")
+        st.stop()
+
+    # === 채팅 UI ===
+    if "messages" not in st.session_state: st.session_state.messages = []
+    for m in st.session_state.messages:
+        with st.chat_message(m["role"]): st.markdown(m["content"])
+    st.markdown("---")
+
+    mode = st.radio("**어떤 도움이 필요한가요?**",
+                    ["💬 이유문법 설명","🔎 구문 분석","📚 독해 및 요약"],
+                    horizontal=True, key="mode_select")
+
+    prompt = st.chat_input("질문을 입력하거나, 분석/요약할 문장을 붙여넣으세요.")
+    if not prompt: return
+
+    st.session_state.messages.append({"role":"user","content":prompt})
+    with st.chat_message("user"): st.markdown(prompt)
+
+    # --- 응답 모드 결정 ---
+    final_mode = None
+    if is_admin and st.session_state.get("use_manual_override"):
+        final_mode = st.session_state["manual_prompt_mode"]
+    else:
+        # 자동 모드 (질문 기반 간단 라우팅)
+        if re.search(r"(분석|품사|구문)", prompt): final_mode = "analyst"
+        elif re.search(r"(요약|정리|번역)", prompt): final_mode = "reader"
+        else: final_mode = "explainer"
+
+    if final_mode=="analyst": sel_prompt=ANALYST_PROMPT
+    elif final_mode=="reader": sel_prompt=READER_PROMPT
+    else: sel_prompt=EXPLAINER_PROMPT
+
+    with st.spinner("AI 선생님이 답변을 생각하는 중..."):
+        try:
+            answer=get_text_answer(st.session_state.query_engine, prompt, sel_prompt)
+        except Exception as e:
+            st.session_state["_error_log"].append(repr(e))
+            answer=f"⚠️ 오류 발생: {e}"
+
+    st.session_state.messages.append({"role":"assistant","content":answer})
+    st.rerun()
+
+# ===== [08] MAIN ENTRY =======================================================
+if __name__=="__main__":
+    main()
