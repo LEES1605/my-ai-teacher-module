@@ -100,8 +100,8 @@ with right:
 
 # ===== [08] SIDEBAR — 관리자 패널(가드 철저) ================================
 with st.sidebar:
-    if HAS_ADMIN_PW and is_admin and st.session_state.get("admin_mode"):
-        # 🔒 관리자 모드 끄기 — 사이드바 한 곳만 노출(중복 제거)
+    # 학생에게는 아무 관리자 UI도 보이지 않음
+    if HAS_ADMIN_PW and st.session_state.get("admin_mode") and is_admin:
         if st.button("🔒 관리자 모드 끄기"):
             st.session_state.admin_mode = False
             _log("관리자 모드 끔")
@@ -144,6 +144,9 @@ with st.sidebar:
                     _log("두뇌 초기화 완료"); st.success("두뇌 파일 삭제됨. 메인에서 다시 준비하세요.")
                 except Exception as e:
                     _log_exception("두뇌 초기화 실패", e); st.error("초기화 중 오류. 우측 Traceback 확인.")
+    else:
+        # 학생 사이드바에 보여줄 항목이 있으면 여기 작성 (현재는 비워둠)
+        pass
 
 # ===== [09] MAIN — 강의 준비 & 연결 진단 & 채팅 =============================
 with left:
