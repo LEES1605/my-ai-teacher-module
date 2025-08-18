@@ -1,6 +1,6 @@
 # ===== [01] TOP OF FILE ======================================================
-# Streamlit AI-Teacher — 핫픽스: NameError 제거 + 관리자 가드 강화 + 로그 패널 유지
-import os, sys, time, traceback, base64, datetime as dt
+# Streamlit AI-Teacher — 관리자 가드 강화 + 진행바 보완 + 로그 패널 유지
+import os, sys, time, traceback, datetime as dt
 from pathlib import Path
 import streamlit as st
 
@@ -17,7 +17,10 @@ if str(APP_DIR) not in sys.path:
 try:
     from src.config import settings, PERSIST_DIR
     from src.prompts import EXPLAINER_PROMPT, ANALYST_PROMPT, READER_PROMPT
-    from src.rag_engine import get_or_build_index, init_llama_settings, get_text_answer, _normalize_sa, _validate_sa
+    from src.rag_engine import (
+        get_or_build_index, init_llama_settings, get_text_answer,
+        _normalize_sa, _validate_sa
+    )
     from src.auth import admin_login_flow
     from src.ui import load_css, ensure_progress_css, safe_render_header, render_progress_bar
     _IMPORT_MODE = "src"
@@ -87,7 +90,11 @@ with _c3:
 
 RAW_ADMIN_PW = _sec(getattr(settings, "ADMIN_PASSWORD", ""))
 HAS_ADMIN_PW = bool(RAW_ADMIN_PW.strip())
+
+# 비밀번호가 설정되어 있고(admin_mode 진입한 상태) 인증되면 True
 is_admin = admin_login_flow(RAW_ADMIN_PW) if HAS_ADMIN_PW and st.session_state.get("admin_mode") else False
+# ✅ 최종 관리자 여부(학생 화면 봉인용): admin_mode AND is_admin
+effective_admin = bool(st.session_state.get("admin_mode") and is_admin)
 
 # ===== [07] 2-COLUMN LAYOUT (로그 패널은 항상 우측) ==========================
 left, right = st.columns([0.66, 0.34], gap="large")
@@ -101,7 +108,7 @@ with right:
 # ===== [08] SIDEBAR — 관리자 패널(가드 철저) ================================
 with st.sidebar:
     # 학생에게는 아무 관리자 UI도 보이지 않음
-    if HAS_ADMIN_PW and st.session_state.get("admin_mode") and is_admin:
+    if effective_admin:
         if st.button("🔒 관리자 모드 끄기"):
             st.session_state.admin_mode = False
             _log("관리자 모드 끔")
@@ -134,24 +141,14 @@ with st.sidebar:
                     "response_mode", ["compact","refine","tree_summarize"],
                     index=["compact","refine","tree_summarize"].index(st.session_state["response_mode"])
                 )
-
-        with st.expander("🛠️ 관리자 도구", expanded=False):
-            if st.button("↺ 두뇌 초기화(인덱스 삭제)"):
-                import shutil
-                try:
-                    if os.path.exists(PERSIST_DIR): shutil.rmtree(PERSIST_DIR)
-                    st.session_state.pop("query_engine", None)
-                    _log("두뇌 초기화 완료"); st.success("두뇌 파일 삭제됨. 메인에서 다시 준비하세요.")
-                except Exception as e:
-                    _log_exception("두뇌 초기화 실패", e); st.error("초기화 중 오류. 우측 Traceback 확인.")
     else:
-        # 학생 사이드바에 보여줄 항목이 있으면 여기 작성 (현재는 비워둠)
+        # 학생 사이드바에 노출할 게 있다면 여기에 (현재는 비워둠)
         pass
 
 # ===== [09] MAIN — 강의 준비 & 연결 진단 & 채팅 =============================
 with left:
-    # --- [09-1] 두뇌 준비 ----------------------------------------------------
-    if "query_engine" not in st.session_state:
+    # --- [09-1] 두뇌 준비(관리자 전용) --------------------------------------
+    if ("query_engine" not in st.session_state) and effective_admin:
         st.markdown("## 📚 강의 준비")
         st.info("‘AI 두뇌 준비’는 로컬 저장본이 있으면 연결하고, 없으면 Drive에서 복구합니다.\n서비스 계정 권한과 폴더 ID가 올바른지 확인하세요.")
 
@@ -160,13 +157,17 @@ with left:
             if st.button("🧠 AI 두뇌 준비(복구/연결)"):
                 bar_slot = st.empty()
                 msg_slot = st.empty()
+                prog = st.progress(0)  # 기본 진행바 (가시성 보장)
                 st.session_state["_gp_pct"] = 0
 
-                def update_pct(pct, msg=None):
+                def update_pct(pct: int, msg: str | None = None):
                     pct = max(0, min(100, int(pct)))
                     st.session_state["_gp_pct"] = pct
+                    # 커스텀 진행바
                     render_progress_bar(bar_slot, pct)
-                    if msg: 
+                    # 기본 진행바
+                    prog.progress(pct)
+                    if msg:
                         msg_slot.markdown(f"<div class='gp-msg'>{msg}</div>", unsafe_allow_html=True)
                         _log(msg)
 
@@ -232,9 +233,9 @@ with left:
                     st.session_state.pop("query_engine", None)
                     _log("본문에서 두뇌 초기화 실행"); st.success("두뇌 파일 삭제됨. 다시 ‘AI 두뇌 준비’를 눌러주세요.")
                 except Exception as e:
-                    _log_exception("본문 초기화 실패", e); st.error("초기화 중 오류. 우측 로그/Traceback 확인.")
+                    _log_exception("본문 초기화 실패", e); st.error("초기화 중 오류. 우측 Traceback 확인.")
 
-        # --- [09-2] 빠른 연결 진단 -------------------------------------------
+        # --- [09-2] 빠른 연결 진단(관리자 전용) ------------------------------
         with diag_col:
             st.markdown("#### 🧪 연결 진단(빠름)")
             st.caption("로컬 캐시/SA/폴더 ID/Drive 복구를 검사하고 로그에 기록합니다.")
@@ -246,7 +247,7 @@ with left:
                     else:
                         _log_kv("local_cache", "missing ❌")
                     try:
-                        sa_norm = _normalize_sa(getattr(settings,"GDRIVE_SERVICE_ACCOUNT_JSON", None))
+                        sa_norm = _normalize_sa(getattr(settings, "GDRIVE_SERVICE_ACCOUNT_JSON", None))
                         creds = _validate_sa(sa_norm)
                         _log("service_account: valid ✅")
                         _log_kv("sa_client_email", creds.get("client_email","(unknown)"))
@@ -260,7 +261,14 @@ with left:
                     st.error("연결 진단 중 오류. 우측 로그/Traceback 확인.")
         st.stop()
 
-    # --- [09-3] 채팅 UI ------------------------------------------------------
+    # --- [09-3] 학생/관리자 공통: 채팅 UI -----------------------------------
+    # (여기까지 내려왔다는 것은 query_engine이 준비되어 있거나, 학생 모드라는 의미)
+    # 학생 모드에서 query_engine이 아직 없으면, 채팅 대신 아래 문구를 보여줄 수도 있음.
+    if "query_engine" not in st.session_state and not effective_admin:
+        st.markdown("## 👋 준비 중")
+        st.info("수업 준비가 완료되면 챗이 열립니다. 잠시만 기다려 주세요.")
+        st.stop()
+
     if "messages" not in st.session_state: st.session_state.messages = []
     for m in st.session_state.messages:
         with st.chat_message(m["role"]): st.markdown(m["content"])
@@ -275,7 +283,8 @@ with left:
     st.session_state.messages.append({"role":"user","content":prompt})
     with st.chat_message("user"): st.markdown(prompt)
 
-    if HAS_ADMIN_PW and is_admin and st.session_state.get("admin_mode") and st.session_state.get("use_manual_override"):
+    # 관리자 수동 오버라이드는 effective_admin일 때만 작동
+    if effective_admin and st.session_state.get("use_manual_override"):
         final_mode = st.session_state.get("manual_prompt_mode","explainer"); origin="관리자 수동"
     else:
         final_mode = "explainer" if mode_label.startswith("💬") else "analyst" if mode_label.startswith("🔎") else "reader"
@@ -289,6 +298,6 @@ with left:
             answer = get_text_answer(st.session_state.query_engine, prompt, selected_prompt)
         st.session_state.messages.append({"role":"assistant","content":answer}); st.rerun()
     except Exception as e:
-        _log_exception("답변 생성 실패", e); st.error("답변 생성 중 오류. 우측 로그/Traceback 확인.")
+        _log_exception("답변 생성 실패", e); st.error("답변 생성 중 오류. 우측 Traceback 확인.")
 
 # ===== [10] END OF FILE ======================================================
