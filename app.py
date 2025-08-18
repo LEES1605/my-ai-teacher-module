@@ -9,15 +9,69 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 os.environ["STREAMLIT_SERVER_ENABLE_WEBSOCKET_COMPRESSION"] = "false"
 
 # ===== [03] IMPORTS ==========================================================
+import sys
+from pathlib import Path
 import streamlit as st
-from src.config import settings, PERSIST_DIR
-from src.ui import load_css, safe_render_header, ensure_progress_css, render_progress_bar
-from src.prompts import EXPLAINER_PROMPT, ANALYST_PROMPT, READER_PROMPT
-from src.rag_engine import (
-    get_or_build_index, init_llama_settings, get_text_answer,
-    _normalize_sa, _validate_sa, try_restore_index_from_drive
-)
-from src.auth import admin_login_flow
+
+# --- PYTHONPATH 보정: app.py가 있는 디렉토리를 sys.path에 추가
+APP_DIR = Path(__file__).resolve().parent
+if str(APP_DIR) not in sys.path:
+    sys.path.insert(0, str(APP_DIR))
+
+# --- src 패키지가 실제로 있는지 확인하고 없으면 루트 모듈을 폴백으로 시도
+_def_ui_err = None
+try:
+    # 1차 시도: 표준 경로 (src 패키지)
+    from src.config import settings, PERSIST_DIR
+    from src.ui import load_css, safe_render_header, ensure_progress_css, render_progress_bar
+    from src.prompts import EXPLAINER_PROMPT, ANALYST_PROMPT, READER_PROMPT
+    from src.rag_engine import (
+        get_or_build_index, init_llama_settings, get_text_answer,
+        _normalize_sa, _validate_sa, try_restore_index_from_drive
+    )
+    from src.auth import admin_login_flow
+except Exception as e:
+    _def_ui_err = e
+    try:
+        # 2차 시도: 루트 모듈에 파일들이 있는 경우 (ui.py, config.py 등)
+        import config as _config
+        settings = _config.settings
+        PERSIST_DIR = _config.PERSIST_DIR
+
+        import ui as _ui
+        load_css = _ui.load_css
+        safe_render_header = _ui.safe_render_header
+        ensure_progress_css = _ui.ensure_progress_css
+        render_progress_bar = _ui.render_progress_bar
+
+        import prompts as _prompts
+        EXPLAINER_PROMPT = _prompts.EXPLAINER_PROMPT
+        ANALYST_PROMPT = _prompts.ANALYST_PROMPT
+        READER_PROMPT = _prompts.READER_PROMPT
+
+        import rag_engine as _rag
+        get_or_build_index = _rag.get_or_build_index
+        init_llama_settings = _rag.init_llama_settings
+        get_text_answer = _rag.get_text_answer
+        _normalize_sa = _rag._normalize_sa
+        _validate_sa = _rag._validate_sa
+        try_restore_index_from_drive = _rag.try_restore_index_from_drive
+
+        import auth as _auth
+        admin_login_flow = _auth.admin_login_flow
+
+        # 폴백 성공 로그(우측 로그 패널에 보여주도록 메시지 저장)
+        st.session_state.setdefault("_ui_logs", [])
+        st.session_state["_ui_logs"].append("[IMPORT] Fallback to root modules (src 패키지 대신 루트 모듈 사용)")
+    except Exception as ee:
+        # 두 경로 모두 실패 → 명확한 안내
+        raise ImportError(
+            "UI/모듈 임포트에 실패했습니다. 다음을 확인하세요:\n"
+            "1) 프로젝트 구조가 'src/...' 패키지를 포함하는지 (src/__init__.py 존재)\n"
+            "2) 또는 루트에 ui.py, config.py, rag_engine.py, prompts.py, auth.py 가 있는지\n"
+            f"[1차 에러: {repr(_def_ui_err)}]\n[2차 에러: {repr(ee)}]"
+        )
+
 
 # ===== [04] PAGE SETUP =======================================================
 st.set_page_config(
