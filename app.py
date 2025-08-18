@@ -1,5 +1,5 @@
 # ===== [01] TOP OF FILE ======================================================
-# Streamlit AI-Teacher App (stepper fix + pause/resume + robust message mapping)
+# Streamlit AI-Teacher App (stepper fix + pause/resume + robust message mapping + admin quickbar)
 
 # ===== [02] ENV VARS =========================================================
 import os
@@ -40,7 +40,7 @@ from src.auth import admin_login_flow
 # ===== [04] SETTINGS & CONSTANTS =============================================
 def _secret_or_str(v):
     try:
-        return v.get_secret_value()  # SecretStr
+        return v.get_secret_value()
     except Exception:
         return str(v)
 
@@ -62,7 +62,6 @@ def clamp(v, lo, hi) -> int:
     return max(lo, min(hi, v))
 
 def _has_sa_any() -> bool:
-    """서비스 계정이 JSON 또는 (email+private_key)로라도 존재하는지 체크."""
     def _g(k: str):
         try:
             return st.secrets.get(k, None)
@@ -149,7 +148,6 @@ if is_admin and not _has_sa_any():
 # ===== [08] AUTO ATTACH / RESTORE ===========================================
 def _auto_attach_or_restore_silently() -> bool:
     try:
-        # (1) 로컬 저장본이 있으면 즉시 연결
         if os.path.exists(PERSIST_DIR):
             init_llama_settings(
                 api_key=_secret_or_str(settings.GEMINI_API_KEY),
@@ -165,7 +163,6 @@ def _auto_attach_or_restore_silently() -> bool:
             st.session_state["_auto_attach_note"] = "local_ok"
             return True
 
-        # (2) 로컬이 없고, 서비스계정이 있을 때만 자동 복원 시도
         if _has_sa_any():
             creds = _validate_sa(_normalize_sa(settings.GDRIVE_SERVICE_ACCOUNT_JSON))
             dest = getattr(settings, "BACKUP_FOLDER_ID", None) or settings.GDRIVE_FOLDER_ID
@@ -257,14 +254,11 @@ if is_admin:
 # ===== [10B] OPTIMIZATION PANEL (with presets) — ADMIN ONLY ==================
 if is_admin:
     with st.expander("🧩 최적화 설정(전처리/청킹/중복제거)", expanded=True):
-        # 1) 프로필 정의
         PROFILES = {
             "⚡ 속도 우선": dict(cs=1600, co=40,  mc=80,  dd=True, slt=True, psu=False),
             "🔁 균형":     dict(cs=1024, co=80,  mc=120, dd=True, slt=True, psu=False),
             "🔎 품질 우선": dict(cs=800,  co=120, mc=200, dd=True, slt=True, psu=True),
         }
-
-        # 상태 기본값
         st.session_state.setdefault("opt_chunk_size",     settings.CHUNK_SIZE)
         st.session_state.setdefault("opt_chunk_overlap",  settings.CHUNK_OVERLAP)
         st.session_state.setdefault("opt_min_chars",      settings.MIN_CHARS_PER_DOC)
@@ -272,7 +266,6 @@ if is_admin:
         st.session_state.setdefault("opt_skip_low_text",  settings.SKIP_LOW_TEXT_DOCS)
         st.session_state.setdefault("opt_pre_summarize",  settings.PRE_SUMMARIZE_DOCS)
 
-        # 2) 프로필 적용
         def _apply_profile(p: dict):
             st.session_state["opt_chunk_size"]    = int(p["cs"])
             st.session_state["opt_chunk_overlap"] = int(p["co"])
@@ -281,7 +274,6 @@ if is_admin:
             st.session_state["opt_skip_low_text"] = bool(p["slt"])
             st.session_state["opt_pre_summarize"] = bool(p["psu"])
 
-        # 3) 프로필 버튼
         st.write("원클릭 프로필:")
         c1, c2, c3 = st.columns(3)
         if c1.button("⚡ 속도 우선"):
@@ -291,7 +283,6 @@ if is_admin:
         if c3.button("🔎 품질 우선"):
             _apply_profile(PROFILES["🔎 품질 우선"]); st.toast("🔎 품질 우선 프로필을 적용했어요!", icon="🔎"); st.rerun()
 
-        # 요약
         st.caption(
             f"현재 설정 → chunk **{st.session_state['opt_chunk_size']}**, "
             f"overlap **{st.session_state['opt_chunk_overlap']}**, "
@@ -302,17 +293,14 @@ if is_admin:
         )
         st.divider()
 
-        # 4) 수동 미세 조정
         c1, c2, c3 = st.columns(3)
         with c1:
             cs_min, cs_max = 200, 2000
             co_min, co_max = 0,   400
             mc_min, mc_max = 50,  3000
-
             cs_def = clamp(st.session_state["opt_chunk_size"], cs_min, cs_max)
             co_def = clamp(st.session_state["opt_chunk_overlap"], co_min, co_max)
             mc_def = clamp(st.session_state["opt_min_chars"], mc_min, mc_max)
-
             cs = st.number_input("청크 크기(문자)",   min_value=cs_min, max_value=cs_max, value=int(cs_def), step=50)
             co = st.number_input("청크 오버랩(문자)", min_value=co_min, max_value=co_max, value=int(co_def), step=10)
             mc = st.number_input("문서 최소 길이(문자)", min_value=mc_min, max_value=mc_max, value=int(mc_def), step=50)
@@ -385,8 +373,56 @@ if is_admin:
         st.write(f"• 체크포인트: `{CHECKPOINT_PATH}` → {'존재' if os.path.exists(CHECKPOINT_PATH) else '없음'}")
         render_quality_report_view()
 
+# ===== [10D] ADMIN QUICKBAR (always visible for admins) ======================
+def render_admin_quickbar():
+    if not is_admin:
+        return
+    st.markdown("#### 🔧 관리자 빠른 제어")
+    c1, c2, c3, c4 = st.columns(4)
+
+    with c1:
+        disabled = bool(st.session_state.get("build_active", False))
+        if st.button("🧠 준비 시작", key="qb_start", disabled=disabled):
+            st.session_state.pop("build_paused", None)
+            finished = _build_or_resume_workflow()
+            if finished:
+                st.rerun()
+                return
+
+    with c2:
+        if st.button("▶ 재개", key="qb_resume", disabled=not st.session_state.get("build_paused", False)):
+            st.session_state.pop("build_paused", None)
+            finished = _build_or_resume_workflow()
+            if finished:
+                st.rerun()
+                return
+
+    with c3:
+        if st.button("🛑 중지", key="qb_stop", disabled=not st.session_state.get("build_active", False)):
+            st.session_state["stop_requested"] = True
+            st.info("중지 요청됨 — 현재 파일까지 마무리하고 곧 멈춥니다.")
+
+    with c4:
+        if st.button("↺ 초기화", key="qb_reset"):
+            import shutil
+            if os.path.exists(PERSIST_DIR):
+                shutil.rmtree(PERSIST_DIR)
+            for p in (CHECKPOINT_PATH, MANIFEST_PATH, QUALITY_REPORT_PATH):
+                try:
+                    if os.path.exists(p):
+                        os.remove(p)
+                except Exception:
+                    pass
+            if "query_engine" in st.session_state:
+                del st.session_state["query_engine"]
+            st.session_state.pop("build_paused", None)
+            st.session_state["build_active"] = False
+            st.success("초기화 완료. ‘🧠 준비 시작’으로 다시 시작하세요.")
+
 # ===== [11] BUILD WORKFLOW (RESUME/STOP) ====================================
 def _build_or_resume_workflow():
+    st.session_state["build_active"] = True  # ▶ 진행 상태 ON
+
     stepper_slot = st.empty(); bar_slot = st.empty(); msg_slot = st.empty(); ctrl_slot = st.empty()
     steps = [("check","드라이브 변경 확인"),("init","Drive 리더 초기화"),
              ("list","문서 목록 불러오는 중"),("index","인덱스 생성"),("save","두뇌 저장")]
@@ -394,7 +430,6 @@ def _build_or_resume_workflow():
     st.session_state["_step_curr"] = None
 
     def _advance_to(key:str):
-        """뒤로 가지 않고 앞으로만 이동."""
         order = [k for k,_ in steps]
         cur  = st.session_state.get("_step_curr")
         if cur is None or order.index(key) >= order.index(cur):
@@ -414,7 +449,6 @@ def _build_or_resume_workflow():
     render_progress(bar_slot, 0)
     msg_slot.markdown("<div class='gp-msg'>두뇌 준비를 시작합니다…</div>", unsafe_allow_html=True)
 
-    # 중지 버튼
     st.session_state["stop_requested"] = False
     with ctrl_slot.container():
         c1, c2 = st.columns([1,1])
@@ -425,13 +459,11 @@ def _build_or_resume_workflow():
                 st.session_state["stop_requested"] = True
                 st.info("중지 요청됨 — 현재 파일까지 마무리하고 곧 멈춥니다.")
 
-    # 진행 업데이트
     st.session_state["_gp_pct"] = 0
 
     def update_pct(pct:int, msg:str|None=None):
         pct_i = max(0, min(100, int(pct)))
         st.session_state["_gp_pct"] = pct_i
-        # 대략적인 구간별 단계 추정(메시지 없을 때 보조)
         if pct_i < 10:      _advance_to("check")
         elif pct_i < 25:    _advance_to("init")
         elif pct_i < 50:    _advance_to("list")
@@ -442,39 +474,18 @@ def _build_or_resume_workflow():
             update_msg(msg)
 
     def update_msg(text:str):
-        """문구를 폭넓게 매칭하여 단계 갱신."""
         t = (text or "").lower()
-
-        # check
-        if any(k in t for k in ["변경 확인","change check","drive change","check"]):
-            _advance_to("check")
-
-        # init
-        elif any(k in t for k in ["리더 초기화","reader init","initialize","init","인증","credential","service"]):
-            _advance_to("init")
-
-        # list
-        elif any(k in t for k in ["목록","list","files","file list","manifest","매니페스트","로드","불러오"]):
-            _advance_to("list")
-
-        # index
-        elif any(k in t for k in ["인덱스","index","chunk","청크","embed","임베","build","vector","persisting"]):
-            _advance_to("index")
-
-        # save
-        elif any(k in t for k in ["저장","save","persist","write","백업","backup","upload"]):
-            _advance_to("save")
-
-        # done
-        if any(k in t for k in ["완료","done","finish","finished","success"]):
-            _set_done_all()
-
+        if   any(k in t for k in ["변경 확인","change check","drive change","check"]): _advance_to("check")
+        elif any(k in t for k in ["리더 초기화","reader init","initialize","init","인증","credential","service"]): _advance_to("init")
+        elif any(k in t for k in ["목록","list","files","file list","manifest","매니페스트","로드","불러오"]): _advance_to("list")
+        elif any(k in t for k in ["인덱스","index","chunk","청크","embed","임베","build","vector","persisting"]): _advance_to("index")
+        elif any(k in t for k in ["저장","save","persist","write","백업","backup","upload"]): _advance_to("save")
+        if any(k in t for k in ["완료","done","finish","finished","success"]): _set_done_all()
         msg_slot.markdown(f"<div class='gp-msg'>{text}</div>", unsafe_allow_html=True)
 
     def should_stop() -> bool:
         return bool(st.session_state.get("stop_requested", False))
 
-    # 1) 모델 준비
     init_llama_settings(
         api_key=_secret_or_str(settings.GEMINI_API_KEY),
         llm_model=settings.LLM_MODEL,
@@ -482,7 +493,6 @@ def _build_or_resume_workflow():
         temperature=float(st.session_state.get("temperature", 0.0)),
     )
 
-    # 2) 인덱스 준비/빌드(체크포인트 + 중지 신호)
     index = get_or_build_index(
         update_pct=update_pct,
         update_msg=update_msg,
@@ -493,23 +503,20 @@ def _build_or_resume_workflow():
         should_stop=should_stop,
     )
 
-    # 중지 시: 엔진 연결/백업 생략, 재개 대기
     if st.session_state.get("stop_requested"):
         st.session_state["build_paused"] = True
-        st.warning("학습을 중지했습니다. **아래의 ‘▶ 재개’ 버튼으로** 이어서 학습할 수 있어요.")
-        return False  # not finished
+        st.session_state["build_active"] = False  # ▶ 진행 상태 OFF
+        st.warning("학습을 중지했습니다. **상단 ‘▶ 재개’ 버튼**으로 이어서 학습할 수 있어요.")
+        return False
 
-    # 3) 연결
     st.session_state.query_engine = index.as_query_engine(
         response_mode=st.session_state.get("response_mode", settings.RESPONSE_MODE),
         similarity_top_k=int(st.session_state.get("similarity_top_k", _default_top_k())),
     )
 
-    # 4) 완료 표시
     update_pct(100, "완료!")
     time.sleep(0.4)
 
-    # 5) 자동 백업
     if _auto_backup_flag():
         try:
             creds = _validate_sa(_normalize_sa(settings.GDRIVE_SERVICE_ACCOUNT_JSON))
@@ -529,53 +536,27 @@ def _build_or_resume_workflow():
             with st.expander("백업 오류 보기"):
                 st.exception(e)
 
-    return True  # finished
+    st.session_state["build_active"] = False  # ▶ 진행 상태 OFF
+    return True
 
 # ===== [12] MAIN =============================================================
 def main():
-    # 이미 두뇌가 붙어 있으면 바로 채팅
+    # 항상 관리자 Quickbar 먼저 렌더링 (버튼이 사라지지 않게)
+    if is_admin:
+        render_admin_quickbar()
+
+    # 이미 두뇌가 붙어 있으면 채팅 표시 (관리자 Quickbar 위에 유지됨)
     if "query_engine" in st.session_state and not st.session_state.get("build_paused"):
         render_chat_ui()
         return
 
     if is_admin:
-        st.info("AI 교사를 시작/재개하려면 아래 버튼을 사용하세요. (체크포인트/중지 지원)")
-
-        # 중지 후 재개 모드
+        # 재개 대기 상태일 때 안내 (Quickbar에도 ▶ 재개가 있음)
         if st.session_state.get("build_paused"):
-            c1, c2 = st.columns([1,1])
-            with c1:
-                if st.button("▶ 재개"):
-                    st.session_state.pop("build_paused", None)
-                    finished = _build_or_resume_workflow()
-                    if finished:
-                        st.rerun()
-                        return
-            with c2:
-                if st.button("↺ 처음부터 다시"):
-                    st.session_state.pop("build_paused", None)
-                    import shutil
-                    if os.path.exists(PERSIST_DIR):
-                        shutil.rmtree(PERSIST_DIR)
-                    for p in (CHECKPOINT_PATH, MANIFEST_PATH, QUALITY_REPORT_PATH):
-                        try:
-                            if os.path.exists(p):
-                                os.remove(p)
-                        except Exception:
-                            pass
-                    st.success("초기화 완료. 다시 ‘AI 두뇌 준비 시작하기’를 눌러주세요.")
-            st.stop()
-
-        # 일반 시작
-        if st.button("🧠 AI 두뇌 준비 시작하기"):
-            finished = _build_or_resume_workflow()
-            if finished:
-                st.rerun()
+            st.info("중지된 상태입니다. 상단 **‘▶ 재개’** 버튼으로 이어서 학습을 계속하세요.")
             return
 
-        # (학생 화면 숨김)
-        with st.container():
-            st.caption("아직 두뇌가 준비되지 않았습니다. 위의 버튼으로 준비를 시작하세요.")
+        st.caption("아직 두뇌가 준비되지 않았습니다. 상단 **‘🧠 준비 시작’** 버튼으로 시작하세요.")
         return
 
     # 학생 화면(관리자 외)
