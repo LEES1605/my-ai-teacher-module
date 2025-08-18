@@ -42,6 +42,14 @@ with _c3:
 # ===== [05] ADMIN AUTH =======================================================
 is_admin = admin_login_flow(getattr(settings, "ADMIN_PASSWORD", ""))
 
+# ✅ 관리자 인증되면, 전역 CSS가 숨긴 사이드바를 다시 보이도록 강제 오버라이드
+#    (assets/style.css 에 [data-testid="stSidebar"] { display: none; } 가 있으므로 필요)
+if is_admin:
+    st.markdown(
+        "<style>[data-testid='stSidebar']{display:block !important;}</style>",
+        unsafe_allow_html=True
+    )
+
 # ===== [06] AUTO ATTACH/RESTORE (SILENT) =====================================
 def _secret_or_str(v):
     try: return v.get_secret_value()
@@ -171,9 +179,7 @@ def render_chat_ui():
         final_mode = st.session_state.get("manual_prompt_mode","explainer")
         origin = "관리자 수동"
     else:
-        # 학생 라디오를 우선할지, 질문 기반 자동을 우선할지 정책 결정
-        # 👉 요구사항: “기본은 질문 자동 선택, 수동은 관리자에만”
-        # => 학생 라디오는 그대로 표시하지만 실제 분기는 ‘자동 추천’을 사용
+        # 정책: 기본은 질문 자동 선택
         final_mode = choose_prompt_mode(prompt)
         origin = "자동 추천(질문 기반)"
 
