@@ -1,5 +1,5 @@
 # ===== [01] TOP OF FILE ======================================================
-# Streamlit AI-Teacher App (stepper fix + pause/resume + robust message mapping + admin quickbar)
+# Streamlit AI-Teacher App (admin quickbar moved above panels + clear student view)
 
 # ===== [02] ENV VARS =========================================================
 import os
@@ -88,6 +88,7 @@ def ensure_progress_css():
         .step-label{font-size:.9rem}
         .step-line{width:22px;height:2px;background:#e2e8f0;border-radius:999px}
         .progress-wrap { position: sticky; top: 0; z-index:5; background: transparent; }
+        .fake-chat {border:1px solid #e5e7eb;border-radius:10px;padding:10px;background:#f9fafb;color:#9ca3af}
         </style>
         """,
         unsafe_allow_html=True,
@@ -228,6 +229,55 @@ def render_quality_report_view():
             )
         else:
             st.caption("아직 수집된 파일 통계가 없습니다.")
+
+# ===== [09B] ADMIN QUICKBAR (top of page, always for admins) =================
+def render_admin_quickbar():
+    if not is_admin:
+        return
+    st.markdown("#### 🔧 관리자 빠른 제어")
+    c1, c2, c3, c4 = st.columns(4)
+
+    with c1:
+        disabled = bool(st.session_state.get("build_active", False))
+        if st.button("🧠 준비 시작", key="qb_start", disabled=disabled):
+            st.session_state.pop("build_paused", None)
+            finished = _build_or_resume_workflow()
+            if finished:
+                st.rerun()
+                return
+
+    with c2:
+        if st.button("▶ 재개", key="qb_resume", disabled=not st.session_state.get("build_paused", False)):
+            st.session_state.pop("build_paused", None)
+            finished = _build_or_resume_workflow()
+            if finished:
+                st.rerun()
+                return
+
+    with c3:
+        if st.button("🛑 중지", key="qb_stop", disabled=not st.session_state.get("build_active", False)):
+            st.session_state["stop_requested"] = True
+            st.info("중지 요청됨 — 현재 파일까지 마무리하고 곧 멈춥니다.")
+
+    with c4:
+        if st.button("↺ 초기화", key="qb_reset"):
+            import shutil
+            if os.path.exists(PERSIST_DIR):
+                shutil.rmtree(PERSIST_DIR)
+            for p in (CHECKPOINT_PATH, MANIFEST_PATH, QUALITY_REPORT_PATH):
+                try:
+                    if os.path.exists(p):
+                        os.remove(p)
+                except Exception:
+                    pass
+            if "query_engine" in st.session_state:
+                del st.session_state["query_engine"]
+            st.session_state.pop("build_paused", None)
+            st.session_state["build_active"] = False
+            st.success("초기화 완료. ‘🧠 준비 시작’으로 다시 시작하세요.")
+
+# 👉 Quickbar를 **패널들보다 위에서** 즉시 렌더
+render_admin_quickbar()
 
 # ===== [10] ADMIN PANELS =====================================================
 if is_admin:
@@ -373,55 +423,9 @@ if is_admin:
         st.write(f"• 체크포인트: `{CHECKPOINT_PATH}` → {'존재' if os.path.exists(CHECKPOINT_PATH) else '없음'}")
         render_quality_report_view()
 
-# ===== [10D] ADMIN QUICKBAR (always visible for admins) ======================
-def render_admin_quickbar():
-    if not is_admin:
-        return
-    st.markdown("#### 🔧 관리자 빠른 제어")
-    c1, c2, c3, c4 = st.columns(4)
-
-    with c1:
-        disabled = bool(st.session_state.get("build_active", False))
-        if st.button("🧠 준비 시작", key="qb_start", disabled=disabled):
-            st.session_state.pop("build_paused", None)
-            finished = _build_or_resume_workflow()
-            if finished:
-                st.rerun()
-                return
-
-    with c2:
-        if st.button("▶ 재개", key="qb_resume", disabled=not st.session_state.get("build_paused", False)):
-            st.session_state.pop("build_paused", None)
-            finished = _build_or_resume_workflow()
-            if finished:
-                st.rerun()
-                return
-
-    with c3:
-        if st.button("🛑 중지", key="qb_stop", disabled=not st.session_state.get("build_active", False)):
-            st.session_state["stop_requested"] = True
-            st.info("중지 요청됨 — 현재 파일까지 마무리하고 곧 멈춥니다.")
-
-    with c4:
-        if st.button("↺ 초기화", key="qb_reset"):
-            import shutil
-            if os.path.exists(PERSIST_DIR):
-                shutil.rmtree(PERSIST_DIR)
-            for p in (CHECKPOINT_PATH, MANIFEST_PATH, QUALITY_REPORT_PATH):
-                try:
-                    if os.path.exists(p):
-                        os.remove(p)
-                except Exception:
-                    pass
-            if "query_engine" in st.session_state:
-                del st.session_state["query_engine"]
-            st.session_state.pop("build_paused", None)
-            st.session_state["build_active"] = False
-            st.success("초기화 완료. ‘🧠 준비 시작’으로 다시 시작하세요.")
-
 # ===== [11] BUILD WORKFLOW (RESUME/STOP) ====================================
 def _build_or_resume_workflow():
-    st.session_state["build_active"] = True  # ▶ 진행 상태 ON
+    st.session_state["build_active"] = True  # 진행 중 표시
 
     stepper_slot = st.empty(); bar_slot = st.empty(); msg_slot = st.empty(); ctrl_slot = st.empty()
     steps = [("check","드라이브 변경 확인"),("init","Drive 리더 초기화"),
@@ -505,7 +509,7 @@ def _build_or_resume_workflow():
 
     if st.session_state.get("stop_requested"):
         st.session_state["build_paused"] = True
-        st.session_state["build_active"] = False  # ▶ 진행 상태 OFF
+        st.session_state["build_active"] = False
         st.warning("학습을 중지했습니다. **상단 ‘▶ 재개’ 버튼**으로 이어서 학습할 수 있어요.")
         return False
 
@@ -536,22 +540,18 @@ def _build_or_resume_workflow():
             with st.expander("백업 오류 보기"):
                 st.exception(e)
 
-    st.session_state["build_active"] = False  # ▶ 진행 상태 OFF
+    st.session_state["build_active"] = False
     return True
 
 # ===== [12] MAIN =============================================================
 def main():
-    # 항상 관리자 Quickbar 먼저 렌더링 (버튼이 사라지지 않게)
-    if is_admin:
-        render_admin_quickbar()
-
-    # 이미 두뇌가 붙어 있으면 채팅 표시 (관리자 Quickbar 위에 유지됨)
+    # 이미 두뇌가 붙어 있으면 채팅
     if "query_engine" in st.session_state and not st.session_state.get("build_paused"):
         render_chat_ui()
         return
 
     if is_admin:
-        # 재개 대기 상태일 때 안내 (Quickbar에도 ▶ 재개가 있음)
+        # 재개 대기 상태면 메시지만 (Quickbar에서 ▶ 재개 가능)
         if st.session_state.get("build_paused"):
             st.info("중지된 상태입니다. 상단 **‘▶ 재개’** 버튼으로 이어서 학습을 계속하세요.")
             return
@@ -559,10 +559,10 @@ def main():
         st.caption("아직 두뇌가 준비되지 않았습니다. 상단 **‘🧠 준비 시작’** 버튼으로 시작하세요.")
         return
 
-    # 학생 화면(관리자 외)
+    # 학생 화면(관리자 외) — 비활성화된 채팅바 모사 + 준비중 안내
     with st.container():
-        st.info("수업 준비 중입니다. 잠시 후 선생님이 두뇌를 연결하면 자동으로 채팅이 열립니다.")
-        st.caption("이 화면은 학생 전용으로, 관리자 기능과 준비 과정은 표시하지 않습니다.")
+        st.info("두뇌를 준비 중입니다. 선생님이 두뇌를 연결하면 채팅이 자동으로 활성화돼요.")
+        st.markdown('<div class="fake-chat">메시지를 입력하세요… (현재 비활성화됨)</div>', unsafe_allow_html=True)
 
 # ===== [13] CHAT UI ==========================================================
 def render_chat_ui():
