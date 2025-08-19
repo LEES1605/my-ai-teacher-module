@@ -1,39 +1,217 @@
-/* ===== Admin Mode UI Darkening Fixes ==================================== */
+/* =========================================================================
+   AI-Teacher  Dark UI — Full stylesheet
+   - 학생/관리자 공통 다크 테마
+   - 관리자 모드의 흰 배경(드롭다운/업로더/로그/확장 패널) 전부 어둡게
+   - 입력창/플레이스홀더/라벨/버튼/진행바/코드 영역 대비 강화
+   ====================================================================== */
 
-/* Expander (관리자 메뉴 펼침) */
-.streamlit-expanderHeader, .streamlit-expanderContent {
-  background-color: #1A2235 !important;  /* 기존 배경보다 살짝 연한 남색 */
-  color: var(--fg) !important;
+/* = [01] Variables & Base ================================================= */
+@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;700&display=swap');
+
+:root{
+  /* foregrounds */
+  --fg: #F7FAFC;
+  --fg-dim: #E2E8F0;
+  --muted: #CBD5E1;   /* placeholder용, 기존보다 살짝 진하게 */
+
+  /* accents */
+  --accent: #9067C6;
+  --accent-2: #A685DB;
+
+  /* panels & inputs */
+  --bg: #0B1220;               /* 전체 배경(학생/관리자 공통) */
+  --panel: rgba(10, 25, 47, 0.70);
+  --panel-2: rgba(45, 55, 72, 0.85);
+  --panel-3: #1A2235;          /* 관리자 전용 컴포넌트 배경 */
+  --panel-4: #1F273A;          /* 로그/코드/드롭다운 배경 */
+
+  --input-bg: rgba(255,255,255,0.12);
+  --input-border: rgba(255,255,255,0.25);
 }
 
-/* Selectbox dropdown 메뉴 */
-.stSelectbox [data-baseweb="select"] {
-  background-color: #2B344A !important;
+/* Base app */
+.stApp{
+  background-color: var(--bg) !important;
   color: var(--fg) !important;
+  font-family: 'Noto Sans KR', system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+}
+h1,h2,h3,h4,h5,h6{ color: var(--fg) !important; }
+[data-testid="stHeader"], [data-testid="stToolbar"]{ background: transparent !important; }
+
+/* = [02] Sidebar ========================================================== */
+[data-testid="stSidebar"]{ display:block !important; }
+[data-testid="stSidebar"] *{ color: var(--fg) !important; }
+[data-testid="stSidebar"] section{ background: var(--panel-3) !important; }
+
+/* = [03] Labels / Help text ============================================== */
+.stTextInput>label,
+.stSelectbox>label,
+.stSlider>label,
+.stRadio>label,
+.stFileUploader>label,
+.stNumberInput>label,
+.stTextArea>label { color: var(--fg-dim) !important; font-weight: 600; }
+
+/* = [04] Inputs (text/password/textarea/chat) ============================ */
+[data-testid="stTextInput"] input,
+input[type="text"], input[type="password"],
+textarea{
+  background-color: var(--input-bg) !important;
+  border: 1px solid var(--input-border) !important;
+  color: var(--fg) !important;
+  caret-color: var(--fg) !important;
+  border-radius: 10px !important;
+}
+[data-testid="stTextInput"] input::placeholder,
+textarea::placeholder{ color: var(--muted) !important; }
+
+/* Chat input 바탕/글씨(관리자 로그인 화면에서도 흰바탕 방지) */
+[data-testid="stChatInput"] textarea,
+[data-testid="stChatInput"] div[contenteditable="true"]{
+  background-color: var(--panel-3) !important;
+  color: var(--fg) !important;
+  border: 1px solid var(--input-border) !important;
+  border-radius: 12px !important;
+}
+
+/* = [05] Select / Dropdown (BaseWeb) ===================================== */
+/* 셀렉트 컴포넌트 자체 바탕 */
+.stSelectbox [data-baseweb="select"]{
+  background-color: var(--panel-3) !important;
+  color: var(--fg) !important;
+  border: 1px solid var(--input-border) !important;
+  border-radius: 10px !important;
 }
 .stSelectbox [data-baseweb="select"] div,
-.stSelectbox [data-baseweb="select"] span {
+.stSelectbox [data-baseweb="select"] span,
+.stSelectbox [data-baseweb="select"] input{
   color: var(--fg) !important;
 }
-.stSelectbox [data-baseweb="select"] [role="listbox"] {
-  background-color: #1F273A !important;
+.stSelectbox [data-baseweb="select"] *::placeholder{ color: var(--muted) !important; }
+
+/* 펼쳐진 옵션 리스트(드롭다운) */
+.stSelectbox [role="listbox"]{
+  background-color: var(--panel-4) !important;
+  color: var(--fg) !important;
+  border: 1px solid var(--input-border) !important;
+  border-radius: 10px !important;
+}
+.stSelectbox [role="option"]{
+  background-color: transparent !important;
+  color: var(--fg) !important;
 }
 
-/* FileUploader 팝업/버튼 */
-.stFileUploader div[data-testid="stFileUploaderDropzone"] {
-  background-color: #1A2235 !important;
+/* = [06] File Uploader ==================================================== */
+.stFileUploader div[data-testid="stFileUploaderDropzone"]{
+  background-color: var(--panel-3) !important;
   border: 1px dashed var(--input-border) !important;
   color: var(--fg) !important;
+  border-radius: 12px !important;
 }
-.stFileUploader label {
-  color: var(--fg-dim) !important;
-  font-weight: 600;
+.stFileUploader label{ color: var(--fg-dim) !important; font-weight: 600; }
+
+/* = [07] Expander (관리자 메뉴) ========================================== */
+.streamlit-expanderHeader, .streamlit-expanderContent{
+  background-color: var(--panel-3) !important;
+  color: var(--fg) !important;
+  border-radius: 10px !important;
 }
 
-/* 로그/메시지 code 패널 */
-.stCode, pre, code {
-  background-color: #1F273A !important;
-  color: #CFE3FF !important;
-  border-radius: 8px;
-  padding: 8px;
+/* = [08] Buttons ========================================================== */
+.stButton>button{
+  border-radius: 999px;
+  border: 2px solid var(--accent);
+  background-color: var(--accent);
+  color: #fff; font-weight: 700;
+  padding: 10px 20px; transition: .2s ease;
 }
+.stButton>button:hover{
+  background: transparent; color: var(--accent-2); border-color: var(--accent-2);
+}
+
+/* = [09] Alerts / Info ==================================================== */
+[data-testid="stAlert"]{
+  background: var(--panel-2) !important;
+  border: 1px solid rgba(255,255,255,0.12) !important;
+  border-radius: 10px !important;
+}
+[data-testid="stAlert"] p{ color: var(--fg) !important; }
+
+/* = [10] Progress & Step scale =========================================== */
+.gp-msg{ margin-top:.5rem; color:#F7FAFC; opacity:.9; font-size:0.95rem; }
+
+/* 커스텀 선형 눈금 (25/50/75/100) */
+.step-scale{
+  display:flex; gap:14px; align-items:center; margin:6px 0 12px 0;
+}
+.step-mark{
+  color:#9CA3AF; font-weight:700; font-size:.9rem;
+  padding:2px 10px; border-radius:999px;
+  border:1px dashed rgba(255,255,255,.2);
+}
+.step-filled{
+  color:#0B1220;
+  background:linear-gradient(90deg,#7c5ad9,#9067C6);
+  border:1px solid transparent;
+}
+
+/* 기본 진행바 톤 보정 */
+div[role="progressbar"]{
+  background: rgba(255,255,255,.15) !important;
+  border-radius: 999px !important;
+}
+
+/* = [11] Code / Logs ====================================================== */
+.stCode, pre, code{
+  background-color: var(--panel-4) !important;
+  color:#CFE3FF !important;
+  border-radius: 8px !important;
+  padding: 8px !important;
+}
+
+/* = [12] Radio / Checkbox / Slider ======================================= */
+.stRadio > label, .stCheckbox > label{ color: var(--fg) !important; }
+.stSlider > div[data-baseweb="slider"]{
+  color: var(--fg) !important;
+}
+.stSlider [role="slider"]{
+  background: var(--accent) !important;
+}
+.stSlider [data-baseweb="slider"] > div{ background: rgba(255,255,255,.2) !important; }
+
+/* = [13] Tables (필요 시) ================================================ */
+table, th, td{
+  color: var(--fg) !important;
+  background-color: var(--panel-3) !important;
+  border-color: var(--input-border) !important;
+}
+
+/* = [14] Forms / Select popover 강제 어둡게 ============================== */
+/* BaseWeb popover(셀렉트/툴팁 팝업) */
+div[role="dialog"]{
+  background-color: var(--panel-4) !important;
+  color: var(--fg) !important;
+  border: 1px solid var(--input-border) !important;
+}
+
+/* = [15] Chat message bubbles ============================================ */
+[data-testid="stChatMessage"]{
+  background-color: var(--panel);
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: 12px; padding: 1rem; margin-bottom: 1rem;
+}
+[data-testid="stChatMessage"] p,
+[data-testid="stChatMessage"] li{ color: var(--fg) !important; }
+
+/* = [16] Misc small fixes ================================================= */
+/* 관리자 인증 입력창 흰바탕 방지 (비번 인풋 포함) */
+section:has(> div [type="password"]) input[type="password"]{
+  background-color: var(--panel-3) !important;
+  color: var(--fg) !important;
+}
+
+/* 관리자 우측 로그/오류 메시지 카드 배경 */
+div:has(> .stCode) { background: transparent !important; }
+
+/* Streamlit 기본 white card(예상치 못한 영역) 대비 */
+.css-1y4p8pa, .css-1v3fvcr { background: var(--panel-3) !important; color: var(--fg) !important; }
