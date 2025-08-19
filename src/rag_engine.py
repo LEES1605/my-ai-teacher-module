@@ -300,29 +300,37 @@ def try_restore_index_from_drive(
 
 
 # ===== [08.5] 백업/내보내기 — P0 스텁 ========================================
-def export_brain_to_drive(target_folder_id: Optional[str] = None) -> None:
-    """
-    P0 stub: 빌드 플로우에서 호출되는 내보내기 함수의 타입만 보장.
-    실제 구현은 P1에서 채운다. (Zero-Error: 타입만 맞추고 통과)
-    """
-    return None
-
-
 def prune_old_backups(
     backups: Optional[Dict[str, Any]] = None,
-    *,
-    prefix: Optional[str] = None,
-    max_to_keep: int = 3,
+    *args: Any,
+    **kwargs: Any,
 ) -> Tuple[int, int]:
     """
-    P0 stub: 오래된 백업 정리(호출부 시그니처에 맞춤).
-    - backups: {id(or name): metadata} 형태 가정
-    - prefix: 특정 접두사만 대상으로 정리
-    - max_to_keep: 유지 개수 (기본 3)
+    P0 stub: 오래된 백업 정리. 호출부 호환성 100% 목표.
+    - 두 번째 '위치 인자'를 prefix로 받아도 OK
+    - 키워드 prefix=..., keep=..., max_to_keep=... 모두 허용
     return: (정리 대상 개수(before), 정리 후 남은 실제 개수(after))
     """
     if backups is None:
         return (0, 0)
+
+    # 1) prefix 추출: 2번째 위치 인자 → args[0], 또는 kwargs["prefix"]
+    prefix: Optional[str] = None
+    if args and isinstance(args[0], str):
+        prefix = args[0]
+    if "prefix" in kwargs and isinstance(kwargs["prefix"], str):
+        # 위치/키워드가 함께 온 경우, 키워드가 우선
+        prefix = kwargs["prefix"]
+
+    # 2) keep/max_to_keep 호환
+    keep_kw = kwargs.get("keep")
+    mtk_kw = kwargs.get("max_to_keep")
+    if isinstance(keep_kw, int):
+        max_to_keep = keep_kw
+    elif isinstance(mtk_kw, int):
+        max_to_keep = mtk_kw
+    else:
+        max_to_keep = 3
 
     keys = list(backups.keys())
     if prefix:
@@ -338,6 +346,7 @@ def prune_old_backups(
 
     after = len(backups)
     return (before, after)
+
 
 
 # ===== [09] 오케스트레이션: 인덱스 확보 =====================================
