@@ -1,15 +1,22 @@
-# ===== [F01] DRIVE CARD =======================================================
+# ===== [01] IMPORTS ==========================================================
 import streamlit as st
+from typing import Any, Mapping
 from src.config import settings
 from src.rag_engine import _normalize_sa, _validate_sa
 from src.patches.overrides import STATE_KEYS
 
+# ===== [02] STATE ACCESSORS ==================================================
 def get_effective_gdrive_folder_id() -> str:
-    return st.session_state.get(STATE_KEYS.GDRIVE_FOLDER_ID) or getattr(settings, "GDRIVE_FOLDER_ID", "")
+    """세션 또는 설정에서 폴더 ID를 문자열로 반환(없으면 빈 문자열)."""
+    val: Any = st.session_state.get(STATE_KEYS.GDRIVE_FOLDER_ID)
+    if not val:
+        val = getattr(settings, "GDRIVE_FOLDER_ID", "")
+    return str(val or "")
 
 def set_effective_gdrive_folder_id(fid: str) -> None:
     st.session_state[STATE_KEYS.GDRIVE_FOLDER_ID] = (fid or "").strip()
 
+# ===== [03] UI: DRIVE CHECK CARD ============================================
 def render_drive_check_card() -> None:
     st.subheader("🔌 드라이브 연결 / 폴더")
     col1, col2, col3 = st.columns([0.5, 0.25, 0.25])
@@ -27,7 +34,7 @@ def render_drive_check_card() -> None:
         sa_email = "—"
         try:
             creds = _validate_sa(_normalize_sa(settings.GDRIVE_SERVICE_ACCOUNT_JSON))
-            sa_email = getattr(creds, "service_account_email", "service account")
+            sa_email = str(creds.get("client_email", "service-account"))
         except Exception:
             ok_sa = False
         st.metric("서비스 계정", "정상" if ok_sa else "오류", delta=sa_email)
