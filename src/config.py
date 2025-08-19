@@ -17,8 +17,8 @@ REPORT_DIR = (APP_DATA_DIR / "reports").resolve()
 REPORT_DIR.mkdir(parents=True, exist_ok=True)
 
 QUALITY_REPORT_PATH = str((REPORT_DIR / "quality_report.json").resolve())
-MANIFEST_PATH = str((APP_DATA_DIR / "drive_manifest.json").resolve())
-CHECKPOINT_PATH = str((APP_DATA_DIR / "checkpoint.json").resolve())  # ← build_flow가 import하는 상수
+MANIFEST_PATH       = str((APP_DATA_DIR / "drive_manifest.json").resolve())
+CHECKPOINT_PATH     = str((APP_DATA_DIR / "checkpoint.json").resolve())  # ✅ build_flow에서 사용
 
 # ===== [03] SETTINGS MODEL ===================================================
 class Settings(BaseSettings):
@@ -137,9 +137,9 @@ def _build_sa_json_from_fields() -> str:
     pk = _first_nonempty("APP_SA_PRIVATE_KEY", "SA_PRIVATE_KEY")
     if not email or not pk:
         return ""
-    project_id = _first_nonempty("APP_SA_PROJECT_ID", "SA_PROJECT_ID") or ""
-    private_key_id = _first_nonempty("APP_SA_PRIVATE_KEY_ID", "SA_PRIVATE_KEY_ID") or ""
-    client_id = _first_nonempty("APP_SA_CLIENT_ID", "SA_CLIENT_ID") or ""
+    project_id    = _first_nonempty("APP_SA_PROJECT_ID", "SA_PROJECT_ID") or ""
+    private_key_id= _first_nonempty("APP_SA_PRIVATE_KEY_ID", "SA_PRIVATE_KEY_ID") or ""
+    client_id     = _first_nonempty("APP_SA_CLIENT_ID", "SA_CLIENT_ID") or ""
     pk_norm = _normalize_private_key_text(pk)
     data = {
         "type": "service_account",
