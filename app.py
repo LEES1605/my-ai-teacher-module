@@ -81,7 +81,7 @@ def _log(msg: str):
 
 def _log_exception(prefix: str, exc: Exception):
     _log(f"{prefix}: {exc}")
-    tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)))
+    tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
     st.session_state["_ui_traceback"] = tb
 
 def _log_kv(k, v):
