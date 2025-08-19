@@ -1,4 +1,4 @@
-# src/config.py
+# ===== [01] IMPORTS ==========================================================
 from __future__ import annotations
 import os, json, base64
 from pathlib import Path
@@ -6,6 +6,7 @@ from typing import Optional, Any
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# ===== [02] PATHS & CONSTANTS ===============================================
 # 프로젝트 루트
 ROOT_DIR = Path(__file__).resolve().parent.parent
 
@@ -17,7 +18,9 @@ REPORT_DIR.mkdir(parents=True, exist_ok=True)
 
 QUALITY_REPORT_PATH = str((REPORT_DIR / "quality_report.json").resolve())
 MANIFEST_PATH = str((APP_DATA_DIR / "drive_manifest.json").resolve())
+CHECKPOINT_PATH = str((APP_DATA_DIR / "checkpoint.json").resolve())  # ← build_flow가 import하는 상수
 
+# ===== [03] SETTINGS MODEL ===================================================
 class Settings(BaseSettings):
     """
     환경변수/Secrets(.env)로 오버라이드 가능한 앱 설정.
@@ -50,9 +53,7 @@ class Settings(BaseSettings):
     # ----- 구글 드라이브 -----
     GDRIVE_FOLDER_ID: str = Field(default="prepared", description="강의자료 폴더 ID(혹은 prepared)")
     GDRIVE_SERVICE_ACCOUNT_JSON: str = Field(default="", description="서비스계정 JSON(문자열)")
-
-    # 백업 폴더(선택: 지정 시 이곳 우선 사용)
-    BACKUP_FOLDER_ID: Optional[str] = None
+    BACKUP_FOLDER_ID: Optional[str] = None  # 백업 폴더(선택)
 
     # ----- 자동 백업/복원 -----
     AUTO_RESTORE_ON_START: bool = True       # 로컬 저장본 없으면 백업 자동 복원
@@ -62,13 +63,13 @@ class Settings(BaseSettings):
     # ----- 기타 -----
     RESPONSE_MODE: str = "compact"
 
-# 인스턴스 생성
+# ===== [04] SETTINGS INSTANCE ===============================================
 settings = Settings()
 
-# --------------------- 하위호환 + 견고한 시크릿 로딩 --------------------------
+# ===== [05] SECRET HELPERS ===================================================
 def _st_secrets_get(key: str) -> Any:
     try:
-        import streamlit as st  # type: ignore
+        import streamlit as st
         return st.secrets.get(key, None)
     except Exception:
         return None
@@ -85,6 +86,7 @@ def _first_nonempty(*keys: str) -> Any:
             return v
     return None
 
+# ===== [06] SECRET NORMALIZERS ==============================================
 def _coerce_json_str(v: Any) -> str:
     """dict/bytes/base64/str 모두 JSON 문자열로 강제 변환."""
     if v is None:
@@ -149,21 +151,18 @@ def _build_sa_json_from_fields() -> str:
         "auth_uri": "https://accounts.google.com/o/oauth2/auth",
         "token_uri": "https://oauth2.googleapis.com/token",
         "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-        # client_x509_cert_url은 없어도 인증 동작엔 문제 없음
     }
     return json.dumps(data, ensure_ascii=False)
 
+# ===== [07] POST-LOAD OVERRIDES =============================================
 try:
     # 1) 전체 JSON / Base64
     if not settings.GDRIVE_SERVICE_ACCOUNT_JSON:
         cand = _first_nonempty(
-            # 권장
             "APP_GDRIVE_SERVICE_ACCOUNT_JSON",
             "APP_GDRIVE_SERVICE_ACCOUNT_JSON_B64",
-            # 구키
             "GDRIVE_SERVICE_ACCOUNT_JSON",
             "GDRIVE_SERVICE_ACCOUNT_JSON_B64",
-            # 과거/기타 호환 키들
             "GOOGLE_SERVICE_ACCOUNT_JSON",
             "SERVICE_ACCOUNT_JSON",
         )
@@ -196,5 +195,6 @@ try:
     if bgf not in (None, ""):
         settings.USE_BG_IMAGE = str(bgf).strip().lower() in ("1", "true", "yes", "on")
 except Exception:
+    # 설정 후처리 에러가 앱 구동을 막지 않도록 무음 처리
     pass
-# -- end compat
+# ===== [08] END ==============================================================
