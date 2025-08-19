@@ -72,9 +72,9 @@ def build_index_with_checkpoint(
 
     # ----- [04.4] TODO LIST (변경분만 처리) -----------------------------------
     todo_ids: List[str] = []
-    for fid, file_meta in remote_manifest.items():
+    for fid, fmeta in remote_manifest.items():
         done = cp.get(fid)
-        if done and done.get("md5") and file_meta.get("md5") and done["md5"] == file_meta["md5"]:
+        if done and done.get("md5") and fmeta.get("md5") and done["md5"] == fmeta["md5"]:
             continue
         todo_ids.append(fid)
 
@@ -121,8 +121,8 @@ def build_index_with_checkpoint(
             break
 
         # ----- [08.2] LOAD SINGLE FILE ---------------------------------------
-        file_meta: Dict[str, Any] = remote_manifest.get(fid, {})
-        fname = str(file_meta.get("name") or fid)
+        fmeta: Dict[str, Any] = remote_manifest.get(fid, {})
+        fname = str(fmeta.get("name") or fid)
         update_msg(f"전처리 • {fname} ({done_cnt + i}/{total})")
 
         try:
@@ -145,11 +145,11 @@ def build_index_with_checkpoint(
         maybe_summarize_docs(kept)
 
         # ----- [08.4] QUALITY REPORT UPDATE ----------------------------------
-        from_name = file_meta.get("name")
+        from_name = fmeta.get("name")
         qrep.setdefault("files", {})[fid] = {
             "name": from_name or fid,
-            "md5": file_meta.get("md5"),
-            "modifiedTime": file_meta.get("modifiedTime"),
+            "md5": fmeta.get("md5"),
+            "modifiedTime": fmeta.get("modifiedTime"),
             "kept": stats["kept"],
             "skipped_low_text": stats["skipped_low_text"],
             "skipped_dup": stats["skipped_dup"],
@@ -165,8 +165,8 @@ def build_index_with_checkpoint(
 
         # ----- [08.5] SKIP CASE (NO KEPT) ------------------------------------
         if int(stats["kept"]) == 0:
-            _mark_done(cp, fid, file_meta)                          # 완료 체크
-            save_checkpoint_copy_to_persist(cp, persist_dir)        # persist_dir에도 동기화
+            _mark_done(cp, fid, fmeta)                          # 완료 체크
+            save_checkpoint_copy_to_persist(cp, persist_dir)    # persist_dir에도 동기화
             pct = 30 + int((i / max(1, pending)) * 60)
             update_pct(pct, f"건너뜀 • {fname} (저품질/중복)")
             if should_stop():
@@ -183,9 +183,9 @@ def build_index_with_checkpoint(
                 show_progress=False,
                 transformations=[splitter],
             )
-            storage_context.persist(persist_dir=persist_dir)       # 부분 저장
-            _mark_done(cp, fid, file_meta)                         # 파일 완료 기록
-            save_checkpoint_copy_to_persist(cp, persist_dir)       # persist_dir에도 동기화
+            storage_context.persist(persist_dir=persist_dir)     # 부분 저장
+            _mark_done(cp, fid, fmeta)                           # 파일 완료 기록
+            save_checkpoint_copy_to_persist(cp, persist_dir)     # persist_dir에도 동기화
         except Exception as e:
             st.error(f"인덱스 생성 중 오류: {fname}")
             with st.expander("자세한 오류 보기"):
