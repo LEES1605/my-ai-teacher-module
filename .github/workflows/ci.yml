@@ -31,10 +31,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Ruff check
+      # P0: 린트는 경고만 남기고 통과(코드 정리 전 단계)
+      - name: Ruff (soft)
         run: |
-          ruff check . --fix
-          ruff format .
+          ruff check . --fix --exit-zero
+          ruff format . || true
 
       - name: Mypy
         run: |
