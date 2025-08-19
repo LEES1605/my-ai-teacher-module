@@ -11,23 +11,27 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 os.environ["STREAMLIT_SERVER_ENABLE_WEBSOCKET_COMPRESSION"] = "false"
 
 # ===== [02] IMPORTS (src 우선, 루트 폴백) ====================================
+from importlib import import_module
+from typing import Any
+
 APP_DIR = Path(__file__).resolve().parent
 if str(APP_DIR) not in sys.path:
     sys.path.insert(0, str(APP_DIR))
 
+# 동적 임포트로 no-redef 차단
 try:
-    import src.config     as _config
-    import src.prompts    as _prompts
-    import src.rag_engine as _rag
-    import src.auth       as _auth
-    import src.ui         as _ui
+    _config  = import_module("src.config")
+    _prompts = import_module("src.prompts")
+    _rag     = import_module("src.rag_engine")
+    _auth    = import_module("src.auth")
+    _ui      = import_module("src.ui")
     _IMPORT_MODE = "src"
-except Exception:
-    import config       as _config
-    import prompts      as _prompts
-    import rag_engine   as _rag
-    import auth         as _auth
-    import ui           as _ui
+except ImportError:
+    _config  = import_module("config")
+    _prompts = import_module("prompts")
+    _rag     = import_module("rag_engine")
+    _auth    = import_module("auth")
+    _ui      = import_module("ui")
     _IMPORT_MODE = "root"
 
 # ── 단일 바인딩(여기서 한 번만 이름 확정) ─────────────────────────────────────
