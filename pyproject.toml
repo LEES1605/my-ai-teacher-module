@@ -1,0 +1,76 @@
+# ===== [01] PROJECT METADATA =================================================
+[project]
+name = "my-ai-teacher-module"
+version = "0.1.0"
+description = "AI 영어 튜터 앱 — Zero-Error CI bootstrap"
+readme = "README.md"
+requires-python = ">=3.10"
+
+# 앱 실행에 필요한 기본 의존성
+dependencies = [
+  "streamlit>=1.36.0",
+  "pydantic>=2.7.0",
+  "google-api-python-client>=2.130.0",
+  "google-auth>=2.31.0",
+  "google-auth-httplib2>=0.2.0",
+  "google-auth-oauthlib>=1.2.0",
+  "python-dotenv>=1.0.1",
+]
+
+# 개발/CI용 도구들(ruff/mypy/pytest/bandit 등)
+[project.optional-dependencies]
+dev = [
+  "ruff>=0.5.0",
+  "mypy>=1.10.0",
+  "pytest>=8.2.0",
+  "pytest-cov>=5.0.0",
+  "bandit>=1.7.9",
+  "types-requests",
+  "types-python-dateutil",
+]
+
+# ===== [02] BUILD SYSTEM (editable install용) ================================
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+# ===== [03] PACKAGE PATHS ====================================================
+# 소스가 src/ 밑에 있다고 가정
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+# ===== [04] PYTEST ===========================================================
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+python_files = ["test_*.py"]
+filterwarnings = ["ignore::DeprecationWarning"]
+
+# ===== [05] RUFF (lint & format) =============================================
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+exclude = ["build", "dist", ".venv", ".git"]
+
+[tool.ruff.lint]
+# 기본 규칙 + 업그레이드/보안/정렬 등
+select = ["E", "F", "I", "B", "UP", "W", "N", "S", "A"]
+ignore = ["E203"]  # black/ruff 충돌 방지용
+
+[tool.ruff.format]
+quote-style = "double"
+
+# ===== [06] MYPY (type check) ================================================
+[tool.mypy]
+python_version = "3.11"
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+ignore_missing_imports = true
+strict_optional = true
+show_error_codes = true
+exclude = ["^tests/"]  # 초기엔 테스트 타입체크 제외(점진 강화 예정)
+
+# ===== [07] BANDIT (security) ===============================================
+[tool.bandit]
+skips = ["B101"]  # assert 허용(초기 테스트 편의)
