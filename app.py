@@ -2,6 +2,7 @@
 # Streamlit AI-Teacher — 관리자 가드/가독성/진행바/연동/더미응답 제거 통합본
 import os, sys, time, traceback, datetime as dt
 from pathlib import Path
+from typing import Any
 import streamlit as st
 
 os.environ["STREAMLIT_SERVER_FILE_WATCHER_TYPE"] = "none"
@@ -15,49 +16,52 @@ if str(APP_DIR) not in sys.path:
     sys.path.insert(0, str(APP_DIR))
 
 try:
-    from src.config import settings, PERSIST_DIR
-    from src.prompts import EXPLAINER_PROMPT, ANALYST_PROMPT, READER_PROMPT
-    from src.rag_engine import (
-        get_or_build_index, init_llama_settings,
-        _normalize_sa, _validate_sa,
-        # NOTE: get_text_answer가 더미이면 쓰지 않음. 아래에서 직접 query 호출.
-    )
-    from src.auth import admin_login_flow
-    from src.ui import load_css, ensure_progress_css, safe_render_header
+    import src.config     as _config
+    import src.prompts    as _prompts
+    import src.rag_engine as _rag
+    import src.auth       as _auth
+    import src.ui         as _ui
     _IMPORT_MODE = "src"
 except Exception:
-    import config as _config
-    settings = _config.settings
-    PERSIST_DIR = _config.PERSIST_DIR
-
-    import prompts as _prompts
-    EXPLAINER_PROMPT = _prompts.EXPLAINER_PROMPT
-    ANALYST_PROMPT = _prompts.ANALYST_PROMPT
-    READER_PROMPT  = _prompts.READER_PROMPT
-
-    import rag_engine as _rag
-    get_or_build_index = _rag.get_or_build_index
-    init_llama_settings = _rag.init_llama_settings
-    _normalize_sa       = _rag._normalize_sa
-    _validate_sa        = _rag._validate_sa
-
-    import auth as _auth
-    admin_login_flow = _auth.admin_login_flow
-
-    from ui import load_css, ensure_progress_css, safe_render_header
+    import config       as _config
+    import prompts      as _prompts
+    import rag_engine   as _rag
+    import auth         as _auth
+    import ui           as _ui
     _IMPORT_MODE = "root"
 
+# ── 단일 바인딩(여기서 한 번만 이름 확정) ─────────────────────────────────────
+settings         = _config.settings
+PERSIST_DIR      = _config.PERSIST_DIR
+
+EXPLAINER_PROMPT = _prompts.EXPLAINER_PROMPT
+ANALYST_PROMPT   = _prompts.ANALYST_PROMPT
+READER_PROMPT    = _prompts.READER_PROMPT
+
+get_or_build_index = _rag.get_or_build_index
+init_llama_settings = _rag.init_llama_settings
+_normalize_sa       = _rag._normalize_sa
+_validate_sa        = _rag._validate_sa
+
+admin_login_flow    = _auth.admin_login_flow
+
+load_css            = _ui.load_css
+ensure_progress_css = _ui.ensure_progress_css
+safe_render_header  = _ui.safe_render_header
+
 # ===== [03] SECRET/STRING HELPER ============================================
-def _sec(value) -> str:
+def _sec(value: Any) -> str:
     try:
         from pydantic.types import SecretStr
         if isinstance(value, SecretStr):
             return value.get_secret_value()
     except Exception:
         pass
-    if value is None: return ""
+    if value is None:
+        return ""
     if isinstance(value, dict):
-        import json; return json.dumps(value, ensure_ascii=False)
+        import json
+        return json.dumps(value, ensure_ascii=False)
     return str(value)
 
 # ===== [04] PAGE SETUP & CSS/HEADER =========================================
@@ -77,10 +81,11 @@ def _log(msg: str):
 
 def _log_exception(prefix: str, exc: Exception):
     _log(f"{prefix}: {exc}")
-    tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+    tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)))
     st.session_state["_ui_traceback"] = tb
 
-def _log_kv(k, v): _log(f"{k}: {v}")
+def _log_kv(k, v):
+    _log(f"{k}: {v}")
 
 # ===== [06] ADMIN ENTRY / AUTH GUARD ========================================
 # 상단 공구 아이콘(항상 보이되, 눌렀을 때만 인증 UI 등장)
@@ -143,29 +148,29 @@ with st.sidebar:
         )
         st.session_state.setdefault("manual_prompt_mode", "explainer")
         st.session_state["manual_prompt_mode"] = st.selectbox(
-            "수동 모드 선택", ["explainer","analyst","reader"],
-            index=["explainer","analyst","reader"].index(st.session_state["manual_prompt_mode"])
+            "수동 모드 선택", ["explainer", "analyst", "reader"],
+            index=["explainer", "analyst", "reader"].index(st.session_state["manual_prompt_mode"])
         )
 
         # --- LLM/RAG 파라미터 + 자동 권장값 연동 -----------------------------
         with st.expander("🤖 RAG/LLM 설정", expanded=False):
             # 권장 매핑
             RECOMMENDED = {
-                "compact":       {"k": 5,  "temp": 0.0},
-                "refine":        {"k": 7,  "temp": 0.2},
-                "tree_summarize":{"k": 9,  "temp": 0.1},
+                "compact":        {"k": 5, "temp": 0.0},
+                "refine":         {"k": 7, "temp": 0.2},
+                "tree_summarize": {"k": 9, "temp": 0.1},
             }
-            st.session_state.setdefault("response_mode", getattr(settings,"RESPONSE_MODE","compact"))
-            st.session_state.setdefault("similarity_top_k", getattr(settings,"SIMILARITY_TOP_K",5))
+            st.session_state.setdefault("response_mode", getattr(settings, "RESPONSE_MODE", "compact"))
+            st.session_state.setdefault("similarity_top_k", getattr(settings, "SIMILARITY_TOP_K", 5))
             st.session_state.setdefault("temperature", 0.0)
             st.session_state.setdefault("_last_response_mode", st.session_state["response_mode"])
             st.session_state.setdefault("auto_tune_llm", True)
 
-            c1, c2, c3 = st.columns([1,1,1])
+            c1, c2, c3 = st.columns([1, 1, 1])
             with c1:
                 st.session_state["response_mode"] = st.selectbox(
-                    "response_mode", ["compact","refine","tree_summarize"],
-                    index=["compact","refine","tree_summarize"].index(st.session_state["response_mode"])
+                    "response_mode", ["compact", "refine", "tree_summarize"],
+                    index=["compact", "refine", "tree_summarize"].index(st.session_state["response_mode"])
                 )
                 st.session_state["auto_tune_llm"] = st.checkbox("자동 권장값 연동", value=st.session_state["auto_tune_llm"])
 
@@ -189,9 +194,10 @@ with st.sidebar:
         # --- (베타) 강의 자료 업로드: 준비/최적화/백업 훅 ----------------------
         with st.expander("📤 강의 자료 업로드(베타)", expanded=False):
             st.caption("원본은 Drive의 prepared 폴더에, 최적화 결과는 backup 폴더에 저장(설계 반영).")
-            uf = st.file_uploader("자료 업로드", type=["pdf","docx","pptx","txt","md","csv","zip"], accept_multiple_files=False)
+            uf = st.file_uploader("자료 업로드", type=["pdf", "docx", "pptx", "txt", "md", "csv", "zip"], accept_multiple_files=False)
             if uf is not None:
-                tmp_dir = Path("/tmp/ai_teacher_uploads"); tmp_dir.mkdir(parents=True, exist_ok=True)
+                tmp_dir = Path("/tmp/ai_teacher_uploads")
+                tmp_dir.mkdir(parents=True, exist_ok=True)
                 tmp_path = tmp_dir / uf.name
                 tmp_path.write_bytes(uf.getbuffer())
                 _log(f"업로드 수신: {tmp_path}")
@@ -225,7 +231,8 @@ with left:
                 pct = max(0, min(100, int(pct)))
                 st.session_state["_gp_pct"] = pct
                 bar.progress(pct)
-                with scale_slot: render_step_scale(pct)
+                with scale_slot:
+                    render_step_scale(pct)
                 if msg:
                     msg_slot.markdown(f"<div class='gp-msg'>{msg}</div>", unsafe_allow_html=True)
                     _log(msg)
@@ -241,7 +248,8 @@ with left:
                         embed_model=settings.EMBED_MODEL,
                         temperature=float(st.session_state.get("temperature", 0.0))
                     )
-                    _log("LLM 설정 완료"); update_pct(2, "설정 확인 중…")
+                    _log("LLM 설정 완료")
+                    update_pct(2, "설정 확인 중…")
 
                     # 2) 인덱스 로드/복구
                     folder_id = getattr(settings, "GDRIVE_FOLDER_ID", None) or getattr(settings, "BACKUP_FOLDER_ID", None)
@@ -252,7 +260,9 @@ with left:
                     _log_kv("folder_id", str(folder_id or "(empty)"))
                     _log_kv("has_service_account", "yes" if raw_sa else "no")
 
-                    def _update_pct_hook(p, m=None): update_pct(p, m)
+                    def _update_pct_hook(p, m=None):
+                        update_pct(p, m)
+
                     index = get_or_build_index(
                         update_pct=_update_pct_hook,
                         update_msg=lambda m: _update_pct_hook(st.session_state["_gp_pct"], m),
@@ -263,11 +273,13 @@ with left:
                     )
                     # 3) QueryEngine
                     st.session_state.query_engine = index.as_query_engine(
-                        response_mode=st.session_state.get("response_mode", getattr(settings,"RESPONSE_MODE","compact")),
-                        similarity_top_k=int(st.session_state.get("similarity_top_k", getattr(settings,"SIMILARITY_TOP_K",5)))
+                        response_mode=st.session_state.get("response_mode", getattr(settings, "RESPONSE_MODE", "compact")),
+                        similarity_top_k=int(st.session_state.get("similarity_top_k", getattr(settings, "SIMILARITY_TOP_K", 5)))
                     )
-                    update_pct(100, "두뇌 준비 완료!"); _log("query_engine 생성 완료 ✅")
-                    time.sleep(0.2); st.rerun()
+                    update_pct(100, "두뇌 준비 완료!")
+                    _log("query_engine 생성 완료 ✅")
+                    time.sleep(0.2)
+                    st.rerun()
 
                 except Exception as e:
                     _log_exception("두뇌 준비 실패", e)
@@ -276,11 +288,14 @@ with left:
             if st.button("📥 강의 자료 다시 불러오기(두뇌 초기화)"):
                 import shutil
                 try:
-                    if os.path.exists(PERSIST_DIR): shutil.rmtree(PERSIST_DIR)
+                    if os.path.exists(PERSIST_DIR):
+                        shutil.rmtree(PERSIST_DIR)
                     st.session_state.pop("query_engine", None)
-                    _log("본문에서 두뇌 초기화 실행"); st.success("두뇌 파일 삭제됨. 다시 ‘AI 두뇌 준비’를 눌러주세요.")
+                    _log("본문에서 두뇌 초기화 실행")
+                    st.success("두뇌 파일 삭제됨. 다시 ‘AI 두뇌 준비’를 눌러주세요.")
                 except Exception as e:
-                    _log_exception("본문 초기화 실패", e); st.error("초기화 중 오류. 우측 Traceback 확인.")
+                    _log_exception("본문 초기화 실패", e)
+                    st.error("초기화 중 오류. 우측 Traceback 확인.")
 
         with diag_col:
             st.markdown("#### 🧪 연결 진단(빠름)")
@@ -294,10 +309,10 @@ with left:
                         _log_kv("local_cache", "missing ❌")
                     # SA 검사
                     try:
-                        sa_norm = _normalize_sa(getattr(settings,"GDRIVE_SERVICE_ACCOUNT_JSON", None))
+                        sa_norm = _normalize_sa(getattr(settings, "GDRIVE_SERVICE_ACCOUNT_JSON", None))
                         creds = _validate_sa(sa_norm)
                         _log("service_account: valid ✅")
-                        _log_kv("sa_client_email", creds.get("client_email","(unknown)"))
+                        _log_kv("sa_client_email", creds.get("client_email", "(unknown)"))
                     except Exception as se:
                         _log_exception("service_account invalid ❌", se)
                     folder_id = getattr(settings, "BACKUP_FOLDER_ID", None) or getattr(settings, "GDRIVE_FOLDER_ID", None)
@@ -314,29 +329,38 @@ with left:
         st.info("수업 준비가 완료되면 챗이 열립니다. 잠시만 기다려 주세요.")
         st.stop()
 
-    if "messages" not in st.session_state: st.session_state.messages = []
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
     for m in st.session_state.messages:
-        with st.chat_message(m["role"]): st.markdown(m["content"])
+        with st.chat_message(m["role"]):
+            st.markdown(m["content"])
     st.markdown("---")
 
-    mode_label = st.radio("**어떤 도움이 필요한가요?**",
-                          ["💬 이유문법 설명","🔎 구문 분석","📚 독해 및 요약"],
-                          horizontal=True, key="mode_select")
+    mode_label = st.radio(
+        "**어떤 도움이 필요한가요?**",
+        ["💬 이유문법 설명", "🔎 구문 분석", "📚 독해 및 요약"],
+        horizontal=True, key="mode_select"
+    )
     user_text = st.chat_input("질문을 입력하거나, 분석/요약할 문장이나 글을 붙여넣으세요.")
-    if not user_text: st.stop()
+    if not user_text:
+        st.stop()
 
-    st.session_state.messages.append({"role":"user","content":user_text})
-    with st.chat_message("user"): st.markdown(user_text)
+    st.session_state.messages.append({"role": "user", "content": user_text})
+    with st.chat_message("user"):
+        st.markdown(user_text)
 
     # 관리자 수동 오버라이드(관리자일 때만 작동)
     if effective_admin and st.session_state.get("use_manual_override"):
-        final_mode = st.session_state.get("manual_prompt_mode","explainer"); origin="관리자 수동"
+        final_mode = st.session_state.get("manual_prompt_mode", "explainer")
+        origin = "관리자 수동"
     else:
         final_mode = "explainer" if mode_label.startswith("💬") else "analyst" if mode_label.startswith("🔎") else "reader"
-        origin="학생 선택"
+        origin = "학생 선택"
     _log(f"모드 결정: {origin} → {final_mode}")
 
-    selected_prompt = EXPLAINER_PROMPT if final_mode=="explainer" else ANALYST_PROMPT if final_mode=="analyst" else READER_PROMPT
+    selected_prompt = EXPLAINER_PROMPT if final_mode == "explainer" else (
+        ANALYST_PROMPT if final_mode == "analyst" else READER_PROMPT
+    )
 
     # [더미응답] 제거: QueryEngine 직접 호출
     try:
@@ -344,7 +368,9 @@ with left:
             qe = st.session_state.query_engine
             resp = qe.query(f"{selected_prompt}\n\n사용자 입력:\n{user_text}") if selected_prompt else qe.query(user_text)
             answer = str(resp)  # LlamaIndex Response -> str
-        st.session_state.messages.append({"role":"assistant","content":answer}); st.rerun()
+        st.session_state.messages.append({"role": "assistant", "content": answer})
+        st.rerun()
     except Exception as e:
-        _log_exception("답변 생성 실패", e); st.error("답변 생성 중 오류. 우측 Traceback 확인.")
+        _log_exception("답변 생성 실패", e)
+        st.error("답변 생성 중 오류. 우측 Traceback 확인.")
 # ===== [10] END OF FILE ======================================================
