@@ -170,7 +170,6 @@ def _load_index_from_disk(persist_dir: str | Path) -> Any:
                 class _QE:
                     def query(self, q: str) -> Any:
                         return type("A", (), {"response": f"[더미응답] {q}"})
-
                 return _QE()
 
         return _DummyIndex()
@@ -309,12 +308,36 @@ def export_brain_to_drive(target_folder_id: Optional[str] = None) -> None:
     return None
 
 
-def prune_old_backups(keep_last: int = 3) -> int:
+def prune_old_backups(
+    backups: Optional[Dict[str, Any]] = None,
+    *,
+    prefix: Optional[str] = None,
+    max_to_keep: int = 3,
+) -> Tuple[int, int]:
     """
-    P0 stub: 오래된 백업 정리. 실제 동작은 P1에서.
-    return 값은 삭제된 개수로 가정(지금은 0).
+    P0 stub: 오래된 백업 정리(호출부 시그니처에 맞춤).
+    - backups: {id(or name): metadata} 형태 가정
+    - prefix: 특정 접두사만 대상으로 정리
+    - max_to_keep: 유지 개수 (기본 3)
+    return: (정리 대상 개수(before), 정리 후 남은 실제 개수(after))
     """
-    return 0
+    if backups is None:
+        return (0, 0)
+
+    keys = list(backups.keys())
+    if prefix:
+        keys = [k for k in keys if k.startswith(prefix)]
+    before = len(keys)
+
+    if before <= max_to_keep:
+        return (before, len(backups))
+
+    to_delete = keys[:-max_to_keep]
+    for k in to_delete:
+        backups.pop(k, None)
+
+    after = len(backups)
+    return (before, after)
 
 
 # ===== [09] 오케스트레이션: 인덱스 확보 =====================================
