@@ -22,8 +22,25 @@ def _secret_or_str(v: Any) -> str:
         return v.get_secret_value()  # pydantic SecretStr
     except Exception:
         return str(v)
+        
+# ===== [03] EXPORT HOOKS ====================================================
+# rag_engine에 심볼이 없을 경우를 대비한 안전 기본값 (우리 rag_engine엔 이미 존재)
+# 이 라인은 호출부와의 시그니처 정합성을 보장하기 위한 방어용
+INDEX_BACKUP_PREFIX: str = INDEX_BACKUP_PREFIX
 
-# ===== [03] MAIN WORKFLOW ====================================================
+def export_brain_to_drive_safe(creds: Any, persist_dir: str, folder_id: str, filename: str | None = None):
+    """
+    export_brain_to_drive가 예외를 던져도 UI 전체가 멈추지 않도록 안전 래퍼.
+    """
+    try:
+        return export_brain_to_drive(creds, persist_dir, folder_id, filename=filename)
+    except Exception as e:
+        st.warning("자동 백업 실패(로컬 저장본은 OK).")
+        with st.expander("백업 오류 보기"):
+            st.exception(e)
+        return None, None
+
+# ===== [04] MAIN WORKFLOW ====================================================
 def build_or_resume_workflow() -> bool:
     # --- UI 준비
     stepper_slot = st.empty(); bar_slot = st.empty(); msg_slot = st.empty(); ctrl_slot = st.empty()
@@ -118,10 +135,12 @@ def build_or_resume_workflow() -> bool:
             creds = _validate_sa(_normalize_sa(settings.GDRIVE_SERVICE_ACCOUNT_JSON))
             dest = getattr(settings, "BACKUP_FOLDER_ID", None) or get_effective_gdrive_folder_id()
             with st.spinner("⬆️ 인덱스 저장본을 드라이브로 자동 백업 중..."):
-                _, file_name = export_brain_to_drive(creds, PERSIST_DIR, dest, filename=None)
-            st.success(f"자동 백업 완료! 파일명: {file_name}")
-            on_after_backup(file_name)
-            prune_old_backups(creds, dest, keep=int(getattr(settings, "BACKUP_KEEP_N", 5)), prefix=INDEX_BACKUP_PREFIX)
+            _, file_name = export_brain_to_drive_safe(creds, PERSIST_DIR, dest, filename=None)
+            if file_name:
+                st.success(f"자동 백업 완료! 파일명: {file_name}")
+                on_after_backup(file_name)
+                prune_old_backups(creds, dest, keep=int(getattr(settings, "BACKUP_KEEP_N", 5)), prefix=INDEX_BACKUP_PREFIX)
+
         except Exception as e:
             st.warning("자동 백업 실패(로컬 저장본은 OK).")
             with st.expander("백업 오류 보기"): st.exception(e)
