@@ -1,6 +1,5 @@
 # ===== [01] TOP ==============================================================
-# RAG Engine — 사용자 친화 에러 + Drive 실제 복구
-# NOTE: P0 단계 — 타입/시그니처 안정화 및 최소 동작 보장
+# RAG Engine — 사용자 친화 에러 + Drive 복구/백업(P0 스텁 포함)
 from __future__ import annotations
 
 import io
@@ -11,11 +10,10 @@ from typing import Any, Callable, Optional, List, Dict, Tuple
 
 # ===== [02] CONFIG BRIDGE ====================================================
 try:
-    from src.config import settings, PERSIST_DIR  # type: ignore
+    from src.config import settings, PERSIST_DIR
 except Exception:
     # 루트 폴백
-    from config import settings, PERSIST_DIR  # type: ignore
-
+    from config import settings, PERSIST_DIR
 
 # ===== [03] 사용자 친화 예외 ==================================================
 class RAGEngineError(Exception):
@@ -24,38 +22,14 @@ class RAGEngineError(Exception):
         self.public_msg = public_msg
         self.debug = debug
 
-
-class SecretsMissing(RAGEngineError):
-    ...
-
-
-class ServiceAccountInvalid(RAGEngineError):
-    ...
-
-
-class FolderIdMissing(RAGEngineError):
-    ...
-
-
-class DriveRestoreFailed(RAGEngineError):
-    ...
-
-
-class LocalIndexMissing(RAGEngineError):
-    ...
-
-
-class IndexLoadFailed(RAGEngineError):
-    ...
-
-
-class LlamaInitFailed(RAGEngineError):
-    ...
-
-
-class QueryEngineNotReady(RAGEngineError):
-    ...
-
+class SecretsMissing(RAGEngineError): ...
+class ServiceAccountInvalid(RAGEngineError): ...
+class FolderIdMissing(RAGEngineError): ...
+class DriveRestoreFailed(RAGEngineError): ...
+class LocalIndexMissing(RAGEngineError): ...
+class IndexLoadFailed(RAGEngineError): ...
+class LlamaInitFailed(RAGEngineError): ...
+class QueryEngineNotReady(RAGEngineError): ...
 
 # ===== [04] 콜백 유틸 ========================================================
 def _safe(cb: Optional[Callable[..., Any]], *a: Any, **kw: Any) -> None:
@@ -66,7 +40,6 @@ def _safe(cb: Optional[Callable[..., Any]], *a: Any, **kw: Any) -> None:
         # 콜백 오류는 삼킨다(진행 방해 X)
         pass
 
-
 def _emit(
     update_pct: Optional[Callable[[int], None]] = None,
     update_msg: Optional[Callable[[str], None]] = None,
@@ -74,10 +47,9 @@ def _emit(
     msg: Optional[str] = None,
 ) -> None:
     if pct is not None:
-        _safe(update_pct, pct)
+        _safe(update_pct, int(pct))
     if msg:
         _safe(update_msg, msg)
-
 
 # ===== [05] Secret/Service Account normalize & validate ======================
 def _normalize_sa(raw_sa: Any) -> str:
@@ -86,7 +58,7 @@ def _normalize_sa(raw_sa: Any) -> str:
 
     # pydantic SecretStr 지원
     try:
-        from pydantic.types import SecretStr  # type: ignore
+        from pydantic.types import SecretStr
         if isinstance(raw_sa, SecretStr):
             raw_sa = raw_sa.get_secret_value()
     except Exception:
@@ -99,12 +71,10 @@ def _normalize_sa(raw_sa: Any) -> str:
         if not s:
             raise SecretsMissing("서비스 계정 키가 비어 있습니다.")
         return s
-
     try:
         return str(raw_sa)
     except Exception:
         raise ServiceAccountInvalid("서비스 계정 키 형식을 알 수 없습니다.")
-
 
 def _validate_sa(json_str: str) -> Dict[str, Any]:
     try:
@@ -119,7 +89,6 @@ def _validate_sa(json_str: str) -> Dict[str, Any]:
         raise ServiceAccountInvalid("서비스 계정 키에 type/private_key/client_email 항목이 없습니다.")
     return data
 
-
 # ===== [06] LLM/임베딩 초기화 ===============================================
 def init_llama_settings(api_key: str, llm_model: str, embed_model: str, temperature: float = 0.0) -> bool:
     """
@@ -133,10 +102,10 @@ def init_llama_settings(api_key: str, llm_model: str, embed_model: str, temperat
             raise ValueError("LLM 모델명이 비어 있습니다.")
         if not embed_model:
             raise ValueError("임베딩 모델명이 비어 있습니다.")
+        _ = float(temperature)
         return True
     except Exception as e:
         raise LlamaInitFailed("LLM/임베딩 초기화 중 오류. API Key/모델명을 확인하세요.", debug=repr(e))
-
 
 # ===== [07] 인덱스 로드/존재 체크 ===========================================
 def _index_exists(persist_dir: str | Path) -> bool:
@@ -148,7 +117,6 @@ def _index_exists(persist_dir: str | Path) -> bool:
     except Exception:
         return False
 
-
 def _load_index_from_disk(persist_dir: str | Path) -> Any:
     """
     실제 프로젝트의 인덱스 로딩 코드를 이 함수에 연결하세요.
@@ -159,21 +127,13 @@ def _load_index_from_disk(persist_dir: str | Path) -> Any:
             raise LocalIndexMissing("로컬 인덱스가 없습니다. 먼저 복구/생성하세요.")
 
         # === 여기에 '진짜' 인덱스 로드 코드를 붙여주세요 ===
-        # 예:
-        # from llama_index import StorageContext, load_index_from_storage
-        # ctx = StorageContext.from_defaults(persist_dir=str(persist_dir))
-        # index = load_index_from_storage(ctx)
-        # return index
-
         class _DummyIndex:
             def as_query_engine(self, **kw: Any) -> Any:
                 class _QE:
                     def query(self, q: str) -> Any:
                         return type("A", (), {"response": f"[더미응답] {q}"})
                 return _QE()
-
         return _DummyIndex()
-
     except RAGEngineError:
         raise
     except Exception as e:
@@ -181,7 +141,6 @@ def _load_index_from_disk(persist_dir: str | Path) -> Any:
             "인덱스 로드 중 오류가 발생했습니다. 인덱스 폴더가 손상되었을 수 있습니다.",
             debug=repr(e),
         )
-
 
 # ===== [08] Drive 복구(실제 다운로드 구현) ===================================
 def try_restore_index_from_drive(
@@ -207,9 +166,9 @@ def try_restore_index_from_drive(
 
     # 의존성 체크
     try:
-        from google.oauth2.service_account import Credentials  # type: ignore
-        from googleapiclient.discovery import build  # type: ignore
-        from googleapiclient.http import MediaIoBaseDownload  # type: ignore
+        from google.oauth2.service_account import Credentials
+        from googleapiclient.discovery import build
+        from googleapiclient.http import MediaIoBaseDownload
     except Exception as e:
         raise DriveRestoreFailed(
             "Google Drive 클라이언트가 설치되어 있지 않습니다. requirements.txt에 "
@@ -298,8 +257,9 @@ def try_restore_index_from_drive(
     except Exception as e:
         raise DriveRestoreFailed("Drive 복구 중 예기치 못한 오류가 발생했습니다.", debug=repr(e))
 
+# ===== [09] 백업/내보내기(스텁) & 정리 =======================================
+INDEX_BACKUP_PREFIX = "rag_index_backup"
 
-# ===== [08.5] 백업/내보내기 — P0 스텁 ========================================
 def prune_old_backups(
     backups: Optional[Dict[str, Any]] = None,
     *args: Any,
@@ -319,7 +279,6 @@ def prune_old_backups(
     if args and isinstance(args[0], str):
         prefix = args[0]
     if "prefix" in kwargs and isinstance(kwargs["prefix"], str):
-        # 위치/키워드가 함께 온 경우, 키워드가 우선
         prefix = kwargs["prefix"]
 
     # 2) keep/max_to_keep 호환
@@ -347,9 +306,22 @@ def prune_old_backups(
     after = len(backups)
     return (before, after)
 
+def export_brain_to_drive(
+    creds: Dict[str, Any],
+    persist_dir: str | Path,
+    folder_id: str,
+    filename: Optional[str] = None,
+) -> Tuple[str, str]:
+    """
+    P0 스텁: 인덱스 디렉토리를 압축/업로드했다고 가정하고, (file_id, file_name)을 반환.
+    실제 구현에서는 googleapiclient를 사용해 files().create(...) 호출.
+    """
+    ts_name = filename or f"{INDEX_BACKUP_PREFIX}.zip"
+    # 실제 업로드 대신 성공 시그니처만 반환
+    fake_file_id = "file_stub_id"
+    return fake_file_id, ts_name
 
-
-# ===== [09] 오케스트레이션: 인덱스 확보 =====================================
+# ===== [10] 오케스트레이션: 인덱스 확보 =====================================
 def get_or_build_index(
     update_pct: Optional[Callable[[int], None]] = None,
     update_msg: Optional[Callable[[str], None]] = None,
@@ -372,7 +344,6 @@ def get_or_build_index(
             if should_stop():
                 raise RAGEngineError("작업이 중단되었습니다. (should_stop)")
         except Exception:
-            # should_stop 구현이 미흡해도 엔진이 죽지 않도록
             pass
 
     # 1) 로컬 먼저
@@ -407,8 +378,7 @@ def get_or_build_index(
     _emit(update_pct, update_msg, 65, "복구됨 → 로드합니다…")
     return _load_index_from_disk(persist_dir)
 
-
-# ===== [10] 질의/답변 래퍼 ===================================================
+# ===== [11] 질의/답변 래퍼 ===================================================
 def get_text_answer(query_engine: Any, prompt: str, sys_prompt: str) -> str:
     if not query_engine:
         raise QueryEngineNotReady("질의 엔진이 준비되지 않았습니다. 먼저 ‘AI 두뇌 준비’를 실행하세요.")
@@ -416,7 +386,7 @@ def get_text_answer(query_engine: Any, prompt: str, sys_prompt: str) -> str:
         q = f"{sys_prompt}\n\n사용자: {prompt}"
         res = query_engine.query(q)
         if hasattr(res, "response"):
-            return res.response  # type: ignore[attr-defined]
+            return res.response
         return str(res)
     except RAGEngineError:
         raise
@@ -426,7 +396,6 @@ def get_text_answer(query_engine: Any, prompt: str, sys_prompt: str) -> str:
             debug=repr(e),
         )
 
-
-# ===== [11] 디버그 헬퍼 ======================================================
+# ===== [12] 디버그 헬퍼 ======================================================
 def _format_debug(e: Exception) -> str:
     return "".join(traceback.format_exception(type(e), e, e.__traceback__))
