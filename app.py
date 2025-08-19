@@ -12,6 +12,8 @@ os.environ["STREAMLIT_SERVER_ENABLE_WEBSOCKET_COMPRESSION"] = "false"
 
 # ===== [02] IMPORTS (src 우선, 루트 폴백) ====================================
 from importlib import import_module
+from pathlib import Path
+import sys
 
 APP_DIR = Path(__file__).resolve().parent
 if str(APP_DIR) not in sys.path:
