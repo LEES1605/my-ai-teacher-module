@@ -70,18 +70,18 @@ def build_index_with_checkpoint(
     # persist_dir에 남아있을 수 있는 checkpoint.json도 자동 로드
     cp: Dict[str, Dict[str, Any]] = _load_checkpoint(also_from_persist_dir=persist_dir)
 
-    # ----- [04.4] TODO LIST (변경분만 처리) -----------------------------------
-    todo_ids: List[str] = []
-    for fid, manifest_meta in remote_manifest.items():
-        done = cp.get(fid)
-        if done and done.get("md5") and manifest_meta.get("md5") and done["md5"] == manifest_meta["md5"]:
-            continue
-        todo_ids.append(fid)
+# ----- [04.4] TODO LIST (변경분만 처리) -----------------------------------
+todo_ids: List[str] = []
+for fid, manifest_meta in remote_manifest.items():
+    done = cp.get(fid)
+    if done and done.get("md5") and manifest_meta.get("md5") and done["md5"] == manifest_meta["md5"]:
+        continue
+    todo_ids.append(fid)
 
-    total = len(remote_manifest)
-    pending = len(todo_ids)
-    done_cnt = total - pending
-    update_pct(30, f"문서 목록 불러오는 중 • 전체 {total}개, 이번에 처리 {pending}개")
+total = len(remote_manifest)
+pending = len(todo_ids)
+done_cnt = total - pending
+update_pct(30, f"문서 목록 불러오는 중 • 전체 {total}개, 이번에 처리 {pending}개")
 
     # ----- [04.5] STORAGE CONTEXT & PRELOAD ----------------------------------
     os.makedirs(persist_dir, exist_ok=True)
