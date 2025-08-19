@@ -1,98 +1,148 @@
-/* ===== Global ============================================================= */
+/* ===== [01] Global / Theme Vars ========================================== */
 @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;700&display=swap');
+
 :root{
-  --fg: #F7FAFC;
-  --fg-dim: #E2E8F0;
-  --muted: #CBD5E1;          /* ⬅️ placeholder 등 조금 더 진한 회색 */
-  --accent: #9067C6;
+  /* 본문/글자 */
+  --bg: #0B1220;             /* 다크 배경 */
+  --fg: #F7FAFC;             /* 본문 글자 */
+  --fg-dim: #E2E8F0;         /* 라벨/보조 글자 */
+  --muted: #B6C2D1;          /* placeholder(조금 진한 회색) */
+
+  /* 포커스/강조 */
+  --accent:   #9067C6;
   --accent-2: #A685DB;
-  --panel: rgba(10, 25, 47, 0.70);
-  --panel-2: rgba(45, 55, 72, 0.85);
-  --input-bg: rgba(255,255,255,0.12);
-  --input-border: rgba(255,255,255,0.25);
+
+  /* 패널/사이드바/인풋 */
+  --panel:      rgba(12, 20, 34, 0.80);
+  --panel-2:    rgba(30, 41, 59, 0.85);
+  --sidebar-bg: rgba(17, 24, 39, 0.96);
+  --sidebar-br: rgba(148, 163, 184, 0.22);
+
+  --input-bg:     rgba(255,255,255,0.10);
+  --input-border: rgba(255,255,255,0.35);
+  --input-focus:  rgba(166,133,219,0.85);
 }
 
-/* ===== Background & Text ================================================== */
+/* ===== [02] App Base ===================================================== */
 .stApp{
-  background-color: #0B1220 !important;
+  background-color: var(--bg) !important;
   color: var(--fg) !important;
   font-family: 'Noto Sans KR', system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
 }
 h1,h2,h3,h4,h5,h6{ color: var(--fg) !important; }
 [data-testid="stHeader"], [data-testid="stToolbar"]{ background: transparent !important; }
 
-/* ===== Sidebar (항상 표시 + 가독성) ====================================== */
-[data-testid="stSidebar"]{ display:block !important; }
-[data-testid="stSidebar"] *{ color: var(--fg) !important; }
+/* ===== [03] Sidebar (항상 보이고, 대비 강화) ============================== */
+[data-testid="stSidebar"]{
+  display:block !important;
+  background: var(--sidebar-bg) !important;
+  backdrop-filter: blur(8px);
+  border-right: 1px solid var(--sidebar-br);
+}
+[data-testid="stSidebar"] *{
+  color: var(--fg) !important;
+}
 
-/* ===== Labels & Help text (가독성 강화) ================================= */
+/* ===== [04] Labels / Help / Legend (더 진하게) =========================== */
 .stTextInput>label, .stSelectbox>label, .stSlider>label, .stRadio>label,
-.stFileUploader>label, .stNumberInput>label { color: var(--fg-dim) !important; font-weight: 600; }
+.stFileUploader>label, .stNumberInput>label, .stPassword>label,
+.stMultiSelect>label, .stDateInput>label{
+  color: var(--fg-dim) !important;
+  font-weight: 700 !important;
+}
 
-/* ===== Inputs (텍스트/비밀번호/텍스트에어리어/셀렉트) ===================== */
+/* ===== [05] Inputs (text/password/textarea/select) ======================= */
+/* 공통 인풋 박스 */
 [data-testid="stTextInput"] input,
+[data-testid="stPassword"] input,
 input[type="text"], input[type="password"], textarea{
   background-color: var(--input-bg) !important;
   border: 1px solid var(--input-border) !important;
-  color: var(--fg) !important; caret-color: var(--fg) !important;
+  color: var(--fg) !important;
+  caret-color: var(--fg) !important;
   border-radius: 10px !important;
 }
-[data-testid="stTextInput"] input::placeholder, textarea::placeholder{
-  color: var(--muted) !important; /* ⬅️ 더 진한 회색 */
+
+/* placeholder를 더 진하게 */
+[data-testid="stTextInput"] input::placeholder,
+[data-testid="stPassword"]  input::placeholder,
+textarea::placeholder{
+  color: var(--muted) !important;
 }
 
-/* Streamlit select 내부 텍스트/placeholder 컬러 보정 */
-.stSelectbox [data-baseweb="select"] div,
-.stSelectbox [data-baseweb="select"] span,
-.stSelectbox [data-baseweb="select"] input{
+/* 포커스 시 더 선명하게 */
+[data-testid="stTextInput"] input:focus,
+[data-testid="stPassword"]  input:focus,
+textarea:focus{
+  outline: none !important;
+  border-color: var(--input-focus) !important;
+  box-shadow: 0 0 0 2px rgba(166,133,219,0.25) !important;
+}
+
+/* Select(내부 baseweb 컴포넌트 색상 보정) */
+.stSelectbox [data-baseweb="select"] *{
   color: var(--fg) !important;
 }
 .stSelectbox [data-baseweb="select"] *::placeholder{
   color: var(--muted) !important;
 }
+.stSelectbox [data-baseweb="select"] div{
+  background-color: transparent !important;
+}
 
-/* ===== Chat Bubbles ======================================================= */
+/* 라디오/체크박스 라벨 대비 */
+.stRadio label, .stCheckbox label{
+  color: var(--fg) !important;
+}
+
+/* ===== [06] Buttons ====================================================== */
+.stButton>button{
+  border-radius: 999px;
+  border: 2px solid var(--accent);
+  background-color: var(--accent);
+  color: #fff; font-weight: 800;
+  padding: 10px 20px;
+  transition: .2s ease;
+}
+.stButton>button:hover{
+  background: transparent;
+  color: var(--accent-2);
+  border-color: var(--accent-2);
+}
+
+/* ===== [07] Panels / Alerts / Expander ================================== */
+[data-testid="stAlert"]{
+  background: var(--panel-2) !important;
+  border: 1px solid rgba(255,255,255,0.15) !important;
+  border-radius: 12px !important;
+}
+[data-testid="stAlert"] p{ color: var(--fg) !important; }
+
+/* expander 헤더/본문 대비 */
+.st-expanderHeader, .stExpanderHeader{
+  color: var(--fg) !important;
+}
+.stExpander{ background: transparent !important; }
+
+/* ===== [08] Chat Bubbles ================================================= */
 [data-testid="stChatMessage"]{
   background-color: var(--panel);
   border: 1px solid rgba(255,255,255,0.10);
   border-radius: 12px; padding: 1rem; margin-bottom: 1rem;
 }
-[data-testid="stChatMessage"] p, [data-testid="stChatMessage"] li{ color: var(--fg) !important; }
-
-/* ===== Buttons ============================================================ */
-.stButton>button{
-  border-radius: 999px; border: 2px solid var(--accent);
-  background-color: var(--accent); color: #fff; font-weight: 700;
-  padding: 10px 20px; transition: .2s ease;
-}
-.stButton>button:hover{
-  background: transparent; color: var(--accent-2); border-color: var(--accent-2);
+[data-testid="stChatMessage"] p, [data-testid="stChatMessage"] li{
+  color: var(--fg) !important;
 }
 
-/* ===== Alerts / Info / Progress ========================================== */
-[data-testid="stAlert"]{
-  background: var(--panel-2);
-  border: 1px solid rgba(255,255,255,0.12);
-  border-radius: 10px;
+/* ===== [09] Progress / Helper Text ====================================== */
+.gp-msg{
+  margin-top:.5rem; color:#F7FAFC; opacity:.95; font-size:0.95rem;
 }
-[data-testid="stAlert"] p{ color: var(--fg) !important; }
 
-/* 기본 진행바 밑 ‘진행 메시지’ */
-.gp-msg{ margin-top:.5rem; color:#F7FAFC; opacity:.9; font-size:0.95rem; }
-
-/* ===== Code / Logs ======================================================== */
+/* ===== [10] Code / Logs ================================================== */
 pre, code{ color:#CFE3FF !important; }
 
-/* ===== Step scale (선형 눈금) ============================================= */
-.step-scale{
-  display:flex; gap:14px; align-items:center; margin:6px 0 12px 0;
-}
-.step-mark{
-  color:#9CA3AF; font-weight:700; font-size:.9rem;
-  padding:2px 10px; border-radius:999px;
-  border:1px dashed rgba(255,255,255,.2);
-}
-.step-filled{
-  color:#0B1220; background:linear-gradient(90deg,#7c5ad9,#9067C6);
-  border:1px solid transparent;
-}
+/* ===== [11] (선택) 작은 입력 박스 높이 보정 ============================== */
+[data-testid="stTextInput"] input,
+[data-testid="stPassword"] input{ height: 42px !important; }
+textarea{ min-height: 120px !important; }
