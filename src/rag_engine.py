@@ -9,11 +9,18 @@ from pathlib import Path
 from typing import Any, Callable, Optional, List, Dict, Tuple
 
 # ===== [02] CONFIG BRIDGE ====================================================
+from importlib import import_module
+
+# 모듈만 한 번 결정 → 전역 바인딩은 단 한 번만 수행(= no-redef 회피)
 try:
-    from src.config import settings, PERSIST_DIR
+    _cfg = import_module("src.config")
+    _IMPORT_MODE = "src"
 except Exception:
-    # 루트 폴백
-    from config import settings, PERSIST_DIR
+    _cfg = import_module("config")
+    _IMPORT_MODE = "root"
+
+settings = _cfg.settings
+PERSIST_DIR = _cfg.PERSIST_DIR
 
 # ===== [03] 사용자 친화 예외 ==================================================
 class RAGEngineError(Exception):
