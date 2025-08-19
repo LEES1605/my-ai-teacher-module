@@ -48,14 +48,16 @@ filterwarnings = ["ignore::DeprecationWarning"]
 
 # ===== [05] RUFF (lint & format) =============================================
 [tool.ruff]
-line-length = 100
+# (변경) 줄 길이 완화: 100 → 120
+line-length = 120
 target-version = "py311"
 exclude = ["build", "dist", ".venv", ".git"]
 
 [tool.ruff.lint]
 # 기본 규칙 + 업그레이드/보안/정렬 등
 select = ["E", "F", "I", "B", "UP", "W", "N", "S", "A"]
-ignore = ["E203"]  # black/ruff 충돌 방지용
+# (변경) 긴 HTML f-string 등 자동 줄바꿈 어려운 경우를 위해 E501 무시 추가
+ignore = ["E203", "E501"]
 
 [tool.ruff.format]
 quote-style = "double"
