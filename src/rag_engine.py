@@ -37,8 +37,7 @@ def _safe(cb: Optional[Callable[..., Any]], *a: Any, **kw: Any) -> None:
         if cb:
             cb(*a, **kw)
     except Exception:
-        # 콜백 오류는 삼킨다(진행 방해 X)
-        pass
+        pass  # 콜백 오류는 삼킨다(진행 방해 X)
 
 def _emit(
     update_pct: Optional[Callable[[int], None]] = None,
@@ -152,10 +151,6 @@ def try_restore_index_from_drive(
     """
     Google Drive v3 API를 사용해 folder_id 하위의 파일/폴더를 재귀적으로 내려받아
     persist_dir에 동일한 구조로 복구합니다.
-
-    requirements.txt 에 다음 패키지 필요:
-      - google-api-python-client
-      - google-auth
     """
     def _emit_msg(m: str) -> None:
         try:
@@ -274,14 +269,12 @@ def prune_old_backups(
     if backups is None:
         return (0, 0)
 
-    # 1) prefix 추출: 2번째 위치 인자 → args[0], 또는 kwargs["prefix"]
     prefix: Optional[str] = None
     if args and isinstance(args[0], str):
         prefix = args[0]
     if "prefix" in kwargs and isinstance(kwargs["prefix"], str):
         prefix = kwargs["prefix"]
 
-    # 2) keep/max_to_keep 호환
     keep_kw = kwargs.get("keep")
     mtk_kw = kwargs.get("max_to_keep")
     if isinstance(keep_kw, int):
@@ -317,8 +310,7 @@ def export_brain_to_drive(
     실제 구현에서는 googleapiclient를 사용해 files().create(...) 호출.
     """
     ts_name = filename or f"{INDEX_BACKUP_PREFIX}.zip"
-    # 실제 업로드 대신 성공 시그니처만 반환
-    fake_file_id = "file_stub_id"
+    fake_file_id = "file_stub_id"  # 실제 업로드 대신 성공 시그니처만 반환
     return fake_file_id, ts_name
 
 # ===== [10] 오케스트레이션: 인덱스 확보 =====================================
@@ -338,7 +330,6 @@ def get_or_build_index(
     """
     _emit(update_pct, update_msg, 2, "설정 확인 중…")
 
-    # (옵션) 중단 신호 체크 — P0에서는 안전 호출만
     if should_stop:
         try:
             if should_stop():
@@ -346,12 +337,10 @@ def get_or_build_index(
         except Exception:
             pass
 
-    # 1) 로컬 먼저
     if _index_exists(persist_dir):
         _emit(update_pct, update_msg, 15, "로컬 인덱스 감지 → 로드합니다…")
         return _load_index_from_disk(persist_dir)
 
-    # 2) Drive 복구
     _emit(update_pct, update_msg, 25, "로컬에 없어요. Drive에서 복구 시도…")
     if not gdrive_folder_id:
         raise FolderIdMissing(
