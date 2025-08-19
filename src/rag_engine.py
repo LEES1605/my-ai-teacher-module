@@ -67,8 +67,8 @@ def _normalize_sa(raw_sa: Any) -> str:
         from pydantic.types import SecretStr
         if isinstance(raw_sa, SecretStr):
             raw_sa = raw_sa.get_secret_value()
-    except Exception:
-        pass
+    except Exception as e:
+        logging.getLogger(__name__).debug("pydantic SecretStr import failed (ignored): %r", e)
 
     if isinstance(raw_sa, dict):
         return json.dumps(raw_sa, ensure_ascii=False)
