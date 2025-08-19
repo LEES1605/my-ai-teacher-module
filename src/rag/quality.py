@@ -1,4 +1,4 @@
-# src/rag/quality.py
+# ===== [01] IMPORTS ==========================================================
 from __future__ import annotations
 
 import os
@@ -10,29 +10,29 @@ from typing import Any, Dict, List, Tuple, Set
 import streamlit as st
 from src.config import settings, QUALITY_REPORT_PATH
 
-# LlamaIndex 문서 모델
+# LlamaIndex 문서 모델 (버전 호환)
 try:
-    # 0.12.x
-    from llama_index.core.schema import Document  # type: ignore[import]  # 다양한 버전 호환
-except Exception:  # 안전 폴백
-    from llama_index.core import Document  # type: ignore[no-redef]
+    # 0.12.x 계열
+    from llama_index.core.schema import Document  # 다양한 버전 호환
+except ImportError:  # 안전 폴백
+    from llama_index.core import Document
 
+# ===== [02] CONSTANTS / REGEX ===============================================
 _ws_re = re.compile(r"[ \t\f\v]+")
 
-
+# ===== [03] TEXT UTILS =======================================================
 def _clean_text(s: str) -> str:
     s = s.replace("\u00a0", " ").replace("\r", "\n")
     s = re.sub(r"\n{3,}", "\n\n", s)
     s = _ws_re.sub(" ", s)
     return s.strip()
 
-
 def _sha1(s: str) -> str:
     return hashlib.sha1(s.encode("utf-8", errors="ignore")).hexdigest()
 
-
+# ===== [04] OPTIONS LOADER ===================================================
 def get_opt() -> Dict[str, Any]:
-    ss = st.session_state  # mypy: Mapping[str, Any] 유사
+    ss = st.session_state  # Mapping 유사
     return {
         "chunk_size": int(ss.get("opt_chunk_size", settings.CHUNK_SIZE)),
         "chunk_overlap": int(ss.get("opt_chunk_overlap", settings.CHUNK_OVERLAP)),
@@ -42,13 +42,13 @@ def get_opt() -> Dict[str, Any]:
         "pre_summarize": bool(ss.get("opt_pre_summarize", settings.PRE_SUMMARIZE_DOCS)),
     }
 
-
+# ===== [05] OPTIONAL DOC SUMMARIZER =========================================
 def maybe_summarize_docs(docs: List[Any]) -> None:
     """옵션이 켜지면 문서 요약을 metadata['doc_summary']에 저장(실패 무시)."""
     if not docs or not get_opt()["pre_summarize"]:
         return
     try:
-        from llama_index.core import Settings  # type: ignore[import]
+        from llama_index.core import Settings
         for d in docs:
             md = getattr(d, "metadata", {}) or {}
             if "doc_summary" in md:
@@ -65,26 +65,27 @@ def maybe_summarize_docs(docs: List[Any]) -> None:
                 resp = Settings.llm.complete(prompt)
                 summary = getattr(resp, "text", None) or str(resp)
                 md["doc_summary"] = summary.strip()
-                # 새 Document로 복제해서 metadata를 반영
+                # 새 Document로 복제해서 metadata 반영
                 d_idx = docs.index(d)
                 docs[d_idx] = Document(text=getattr(d, "text", ""), metadata=md)
             except Exception:
+                # 요약 실패는 무시(품질 보조 기능)
                 pass
     except Exception:
+        # Settings 미구현/미설정 등은 조용히 패스
         pass
 
-
+# ===== [06] DOCUMENT CLONE ===================================================
 def _clone_with_text_and_meta(d: Any, new_text: str, new_meta: Dict[str, Any]) -> Document:
     """원본 d에서 텍스트/메타를 반영한 새 Document 생성(직접 대입 금지)."""
     try:
-        # 파일명/기타 메타를 최대한 보존
         md = dict(getattr(d, "metadata", {}) or {})
         md.update(new_meta)
     except Exception:
         md = dict(new_meta)
     return Document(text=new_text, metadata=md)
 
-
+# ===== [07] PREPROCESS PIPELINE =============================================
 def preprocess_docs(
     docs: List[Any],
     seen_hashes: Set[str],
@@ -121,14 +122,13 @@ def preprocess_docs(
         stats["total_chars"] += len(t)
     return kept, stats
 
-
+# ===== [08] QUALITY REPORT IO ===============================================
 def load_quality_report(path: str = QUALITY_REPORT_PATH) -> Dict[str, Any]:
     try:
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception:
         return {"summary": {}, "files": {}}
-
 
 def save_quality_report(data: Dict[str, Any], path: str = QUALITY_REPORT_PATH) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
