@@ -21,3 +21,12 @@ protobuf<5
 pypdf
 pydantic-settings>=2.2,<3
 pydantic>=2.4,<3
+
+# ===== dev/CI tools ==================================================
+ruff>=0.5.0
+mypy>=1.10.0
+pytest>=8.2.0
+pytest-cov>=5.0.0
+bandit>=1.7.9
+types-requests
+types-python-dateutil
