@@ -1,5 +1,8 @@
-# ===== [F04] BUILD FLOW ======================================================
-import time, os, streamlit as st
+# ===== [01] IMPORTS ==========================================================
+from __future__ import annotations
+import time, streamlit as st
+from typing import Any
+
 from src.config import settings, PERSIST_DIR, MANIFEST_PATH, CHECKPOINT_PATH
 from src.rag_engine import (
     get_or_build_index, init_llama_settings, _load_index_from_disk,
@@ -13,10 +16,14 @@ from src.patches.overrides import (
     STATE_KEYS, on_after_backup, on_after_finish
 )
 
-def _secret_or_str(v):
-    try: return v.get_secret_value()
-    except Exception: return str(v)
+# ===== [02] UTILS ============================================================
+def _secret_or_str(v: Any) -> str:
+    try:
+        return v.get_secret_value()  # pydantic SecretStr
+    except Exception:
+        return str(v)
 
+# ===== [03] MAIN WORKFLOW ====================================================
 def build_or_resume_workflow() -> bool:
     # --- UI 준비
     stepper_slot = st.empty(); bar_slot = st.empty(); msg_slot = st.empty(); ctrl_slot = st.empty()
