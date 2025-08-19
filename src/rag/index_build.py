@@ -20,19 +20,17 @@ from .quality import (
     save_quality_report,
 )
 
-# ===== [02] TYPE HINTS & PROTOCOLS ==========================================
-# - CI(mypy)에서 경고를 줄이기 위한 명시적 타입 표기
+# ===== [02] TYPE HINTS =======================================================
 UpdatePct = Callable[[int, str | None], None]
 UpdateMsg = Callable[[str], None]
 Manifest = Dict[str, Dict[str, Any]]
 
-# ===== [03] EXTERNAL DEPENDENCIES (LAZY IMPORT) ==============================
-# - llama_index 계열은 버전 차가 크므로, 런타임에서 안전하게 로드
+# ===== [03] SAFE IMPORT (RUNTIME) ============================================
 def _safe_import_llama():
     try:
-        from llama_index.core import VectorStoreIndex, load_index_from_storage  # type: ignore[import]
-        from llama_index.core.node_parser import SentenceSplitter  # type: ignore[import]
-        from llama_index.readers.google import GoogleDriveReader  # type: ignore[import]
+        from llama_index.core import VectorStoreIndex, load_index_from_storage
+        from llama_index.core.node_parser import SentenceSplitter
+        from llama_index.readers.google import GoogleDriveReader
         return VectorStoreIndex, load_index_from_storage, SentenceSplitter, GoogleDriveReader
     except Exception as e:
         st.error("llama_index 모듈 로드 중 문제가 발생했습니다. requirements 버전을 확인하세요.")
@@ -74,9 +72,9 @@ def build_index_with_checkpoint(
 
     # ----- [04.4] TODO LIST (변경분만 처리) -----------------------------------
     todo_ids: List[str] = []
-    for fid, meta in remote_manifest.items():
+    for fid, file_meta in remote_manifest.items():
         done = cp.get(fid)
-        if done and done.get("md5") and meta.get("md5") and done["md5"] == meta["md5"]:
+        if done and done.get("md5") and file_meta.get("md5") and done["md5"] == file_meta["md5"]:
             continue
         todo_ids.append(fid)
 
@@ -123,13 +121,13 @@ def build_index_with_checkpoint(
             break
 
         # ----- [08.2] LOAD SINGLE FILE ---------------------------------------
-        meta: Dict[str, Any] = remote_manifest.get(fid, {})
-        fname = str(meta.get("name") or fid)
+        file_meta: Dict[str, Any] = remote_manifest.get(fid, {})
+        fname = str(file_meta.get("name") or fid)
         update_msg(f"전처리 • {fname} ({done_cnt + i}/{total})")
 
         try:
             # 일부 버전은 file_ids 파라미터를 지원하지 않아 TypeError가 날 수 있음
-            docs = loader.load_data(file_ids=[fid])  # type: ignore[call-arg]
+            docs = loader.load_data(file_ids=[fid])
         except TypeError:
             st.error(
                 "GoogleDriveReader 버전이 오래되어 file_ids 옵션을 지원하지 않습니다. "
@@ -147,11 +145,11 @@ def build_index_with_checkpoint(
         maybe_summarize_docs(kept)
 
         # ----- [08.4] QUALITY REPORT UPDATE ----------------------------------
-        from_name = meta.get("name")
+        from_name = file_meta.get("name")
         qrep.setdefault("files", {})[fid] = {
             "name": from_name or fid,
-            "md5": meta.get("md5"),
-            "modifiedTime": meta.get("modifiedTime"),
+            "md5": file_meta.get("md5"),
+            "modifiedTime": file_meta.get("modifiedTime"),
             "kept": stats["kept"],
             "skipped_low_text": stats["skipped_low_text"],
             "skipped_dup": stats["skipped_dup"],
@@ -167,8 +165,8 @@ def build_index_with_checkpoint(
 
         # ----- [08.5] SKIP CASE (NO KEPT) ------------------------------------
         if int(stats["kept"]) == 0:
-            _mark_done(cp, fid, meta)                          # 완료 체크
-            save_checkpoint_copy_to_persist(cp, persist_dir)   # persist_dir에도 동기화
+            _mark_done(cp, fid, file_meta)                          # 완료 체크
+            save_checkpoint_copy_to_persist(cp, persist_dir)        # persist_dir에도 동기화
             pct = 30 + int((i / max(1, pending)) * 60)
             update_pct(pct, f"건너뜀 • {fname} (저품질/중복)")
             if should_stop():
@@ -186,7 +184,7 @@ def build_index_with_checkpoint(
                 transformations=[splitter],
             )
             storage_context.persist(persist_dir=persist_dir)       # 부분 저장
-            _mark_done(cp, fid, meta)                              # 파일 완료 기록
+            _mark_done(cp, fid, file_meta)                         # 파일 완료 기록
             save_checkpoint_copy_to_persist(cp, persist_dir)       # persist_dir에도 동기화
         except Exception as e:
             st.error(f"인덱스 생성 중 오류: {fname}")
