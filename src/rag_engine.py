@@ -1,13 +1,13 @@
 # ===== [01] TOP ==============================================================
-# RAG Engine — 사용자 친화 에러 + Drive 실제 복구 + 3.9 호환 타입힌트(PEP604 미사용)
+# RAG Engine — 사용자 친화 에러 + Drive 실제 복구
+# NOTE: P0 단계 — 타입/시그니처 안정화 및 최소 동작 보장
 from __future__ import annotations
 
-import os
 import io
 import json
 import traceback
 from pathlib import Path
-from typing import Any, Callable, Optional, List, Dict
+from typing import Any, Callable, Optional, List, Dict, Tuple
 
 # ===== [02] CONFIG BRIDGE ====================================================
 try:
@@ -25,29 +25,54 @@ class RAGEngineError(Exception):
         self.debug = debug
 
 
-class SecretsMissing(RAGEngineError): ...
-class ServiceAccountInvalid(RAGEngineError): ...
-class FolderIdMissing(RAGEngineError): ...
-class DriveRestoreFailed(RAGEngineError): ...
-class LocalIndexMissing(RAGEngineError): ...
-class IndexLoadFailed(RAGEngineError): ...
-class LlamaInitFailed(RAGEngineError): ...
-class QueryEngineNotReady(RAGEngineError): ...
+class SecretsMissing(RAGEngineError):
+    ...
+
+
+class ServiceAccountInvalid(RAGEngineError):
+    ...
+
+
+class FolderIdMissing(RAGEngineError):
+    ...
+
+
+class DriveRestoreFailed(RAGEngineError):
+    ...
+
+
+class LocalIndexMissing(RAGEngineError):
+    ...
+
+
+class IndexLoadFailed(RAGEngineError):
+    ...
+
+
+class LlamaInitFailed(RAGEngineError):
+    ...
+
+
+class QueryEngineNotReady(RAGEngineError):
+    ...
 
 
 # ===== [04] 콜백 유틸 ========================================================
-def _safe(cb: Optional[Callable[..., Any]], *a, **kw) -> None:
+def _safe(cb: Optional[Callable[..., Any]], *a: Any, **kw: Any) -> None:
     try:
         if cb:
             cb(*a, **kw)
     except Exception:
+        # 콜백 오류는 삼킨다(진행 방해 X)
         pass
 
 
-def _emit(update_pct: Optional[Callable[[int], None]] = None,
-          update_msg: Optional[Callable[[str], None]] = None,
-          pct: Optional[int] = None,
-          msg: Optional[str] = None) -> None:
+def _emit(
+    update_pct: Optional[Callable[[int], None]] = None,
+    update_msg: Optional[Callable[[str], None]] = None,
+    pct: Optional[int] = None,
+    msg: Optional[str] = None,
+) -> None:
     if pct is not None:
         _safe(update_pct, pct)
     if msg:
@@ -74,6 +99,7 @@ def _normalize_sa(raw_sa: Any) -> str:
         if not s:
             raise SecretsMissing("서비스 계정 키가 비어 있습니다.")
         return s
+
     try:
         return str(raw_sa)
     except Exception:
@@ -86,7 +112,7 @@ def _validate_sa(json_str: str) -> Dict[str, Any]:
     except Exception as e:
         raise ServiceAccountInvalid(
             "서비스 계정 키(JSON) 파싱 실패. private_key 줄바꿈(\\n)과 TOML 따옴표(''' ... ''')를 확인하세요.",
-            debug=repr(e)
+            debug=repr(e),
         )
     needed = {"type", "private_key", "client_email"}
     if not needed.issubset(set(data.keys())):
@@ -96,6 +122,10 @@ def _validate_sa(json_str: str) -> Dict[str, Any]:
 
 # ===== [06] LLM/임베딩 초기화 ===============================================
 def init_llama_settings(api_key: str, llm_model: str, embed_model: str, temperature: float = 0.0) -> bool:
+    """
+    실제 라이브러리 초기화가 있다면 이곳에 연결.
+    P0: 파라미터 유효성만 확인하여 최소 동작 보장.
+    """
     try:
         if not api_key:
             raise ValueError("Gemini API Key가 비어 있습니다.")
@@ -103,7 +133,6 @@ def init_llama_settings(api_key: str, llm_model: str, embed_model: str, temperat
             raise ValueError("LLM 모델명이 비어 있습니다.")
         if not embed_model:
             raise ValueError("임베딩 모델명이 비어 있습니다.")
-        # 실제 라이브러리 초기화가 있다면 이곳에 연결
         return True
     except Exception as e:
         raise LlamaInitFailed("LLM/임베딩 초기화 중 오류. API Key/모델명을 확인하세요.", debug=repr(e))
@@ -120,7 +149,7 @@ def _index_exists(persist_dir: str | Path) -> bool:
         return False
 
 
-def _load_index_from_disk(persist_dir: str | Path):
+def _load_index_from_disk(persist_dir: str | Path) -> Any:
     """
     실제 프로젝트의 인덱스 로딩 코드를 이 함수에 연결하세요.
     지금은 안전한 더미 인덱스를 반환해 최소 동작 보장합니다.
@@ -130,23 +159,29 @@ def _load_index_from_disk(persist_dir: str | Path):
             raise LocalIndexMissing("로컬 인덱스가 없습니다. 먼저 복구/생성하세요.")
 
         # === 여기에 '진짜' 인덱스 로드 코드를 붙여주세요 ===
-        # 예: from llama_index import StorageContext, load_index_from_storage
-        #     ctx = StorageContext.from_defaults(persist_dir=str(persist_dir))
-        #     index = load_index_from_storage(ctx)
-        #     return index
+        # 예:
+        # from llama_index import StorageContext, load_index_from_storage
+        # ctx = StorageContext.from_defaults(persist_dir=str(persist_dir))
+        # index = load_index_from_storage(ctx)
+        # return index
 
         class _DummyIndex:
-            def as_query_engine(self, **kw):
+            def as_query_engine(self, **kw: Any) -> Any:
                 class _QE:
-                    def query(self, q):
+                    def query(self, q: str) -> Any:
                         return type("A", (), {"response": f"[더미응답] {q}"})
+
                 return _QE()
+
         return _DummyIndex()
 
     except RAGEngineError:
         raise
     except Exception as e:
-        raise IndexLoadFailed("인덱스 로드 중 오류가 발생했습니다. 인덱스 폴더가 손상되었을 수 있습니다.", debug=repr(e))
+        raise IndexLoadFailed(
+            "인덱스 로드 중 오류가 발생했습니다. 인덱스 폴더가 손상되었을 수 있습니다.",
+            debug=repr(e),
+        )
 
 
 # ===== [08] Drive 복구(실제 다운로드 구현) ===================================
@@ -180,7 +215,7 @@ def try_restore_index_from_drive(
         raise DriveRestoreFailed(
             "Google Drive 클라이언트가 설치되어 있지 않습니다. requirements.txt에 "
             "`google-api-python-client`와 `google-auth`를 추가하고 다시 배포하세요.",
-            debug=repr(e)
+            debug=repr(e),
         )
 
     try:
@@ -265,6 +300,23 @@ def try_restore_index_from_drive(
         raise DriveRestoreFailed("Drive 복구 중 예기치 못한 오류가 발생했습니다.", debug=repr(e))
 
 
+# ===== [08.5] 백업/내보내기 — P0 스텁 ========================================
+def export_brain_to_drive(target_folder_id: Optional[str] = None) -> None:
+    """
+    P0 stub: 빌드 플로우에서 호출되는 내보내기 함수의 타입만 보장.
+    실제 구현은 P1에서 채운다. (Zero-Error: 타입만 맞추고 통과)
+    """
+    return None
+
+
+def prune_old_backups(keep_last: int = 3) -> int:
+    """
+    P0 stub: 오래된 백업 정리. 실제 동작은 P1에서.
+    return 값은 삭제된 개수로 가정(지금은 0).
+    """
+    return 0
+
+
 # ===== [09] 오케스트레이션: 인덱스 확보 =====================================
 def get_or_build_index(
     update_pct: Optional[Callable[[int], None]] = None,
@@ -273,8 +325,23 @@ def get_or_build_index(
     raw_sa: Optional[Any] = None,
     persist_dir: str | Path = PERSIST_DIR,
     manifest_path: Optional[str] = None,
-):
+    should_stop: Optional[Callable[[], bool]] = None,  # P0: 호출부와 시그니처 정합성
+) -> Any:
+    """
+    - 로컬에 인덱스가 있으면 로드
+    - 없으면 Drive에서 복구 시도 후 로드
+    - P0: should_stop 콜백은 전달만 받고, 실제 사용은 선택적으로 수행
+    """
     _emit(update_pct, update_msg, 2, "설정 확인 중…")
+
+    # (옵션) 중단 신호 체크 — P0에서는 안전 호출만
+    if should_stop:
+        try:
+            if should_stop():
+                raise RAGEngineError("작업이 중단되었습니다. (should_stop)")
+        except Exception:
+            # should_stop 구현이 미흡해도 엔진이 죽지 않도록
+            pass
 
     # 1) 로컬 먼저
     if _index_exists(persist_dir):
@@ -284,7 +351,10 @@ def get_or_build_index(
     # 2) Drive 복구
     _emit(update_pct, update_msg, 25, "로컬에 없어요. Drive에서 복구 시도…")
     if not gdrive_folder_id:
-        raise FolderIdMissing("Google Drive 폴더 ID가 비어 있습니다.", "settings.GDRIVE_FOLDER_ID/BACKUP_FOLDER_ID 확인")
+        raise FolderIdMissing(
+            "Google Drive 폴더 ID가 비어 있습니다.",
+            "settings.GDRIVE_FOLDER_ID/BACKUP_FOLDER_ID 확인",
+        )
 
     creds = _validate_sa(_normalize_sa(raw_sa))
     ok, note = try_restore_index_from_drive(creds, persist_dir, gdrive_folder_id, update_msg=update_msg)
@@ -314,12 +384,15 @@ def get_text_answer(query_engine: Any, prompt: str, sys_prompt: str) -> str:
         q = f"{sys_prompt}\n\n사용자: {prompt}"
         res = query_engine.query(q)
         if hasattr(res, "response"):
-            return res.response
+            return res.response  # type: ignore[attr-defined]
         return str(res)
     except RAGEngineError:
         raise
     except Exception as e:
-        raise RAGEngineError("답변 생성 중 오류가 발생했습니다. 우측 Traceback과 관리자 설정을 확인하세요.", debug=repr(e))
+        raise RAGEngineError(
+            "답변 생성 중 오류가 발생했습니다. 우측 Traceback과 관리자 설정을 확인하세요.",
+            debug=repr(e),
+        )
 
 
 # ===== [11] 디버그 헬퍼 ======================================================
