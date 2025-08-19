@@ -1,61 +1,65 @@
-/* ===== [01] Global / Theme Vars ========================================== */
+/* ===== [01] GLOBAL ========================================================= */
 @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;700&display=swap');
 
 :root{
-  /* 본문/글자 */
-  --bg: #0B1220;             /* 다크 배경 */
-  --fg: #F7FAFC;             /* 본문 글자 */
-  --fg-dim: #E2E8F0;         /* 라벨/보조 글자 */
-  --muted: #B6C2D1;          /* placeholder(조금 진한 회색) */
-
-  /* 포커스/강조 */
-  --accent:   #9067C6;
+  --fg: #F7FAFC;           /* 본문 텍스트 */
+  --fg-dim: #E2E8F0;       /* 레이블/캡션 */
+  --muted: #CBD5E1;        /* placeholder (진한 회색) */
+  --accent: #9067C6;
   --accent-2: #A685DB;
 
-  /* 패널/사이드바/인풋 */
-  --panel:      rgba(12, 20, 34, 0.80);
-  --panel-2:    rgba(30, 41, 59, 0.85);
-  --sidebar-bg: rgba(17, 24, 39, 0.96);
-  --sidebar-br: rgba(148, 163, 184, 0.22);
+  --bg: #0B1220;           /* 앱 배경 */
+  --panel: rgba(10, 25, 47, 0.70);   /* 카드/말풍선 */
+  --panel-2: rgba(45, 55, 72, 0.85); /* 강조 카드/알림/코드 */
+  --input-bg: rgba(255,255,255,0.10);
+  --input-border: rgba(255,255,255,0.25);
 
-  --input-bg:     rgba(255,255,255,0.10);
-  --input-border: rgba(255,255,255,0.35);
-  --input-focus:  rgba(166,133,219,0.85);
+  /* 드롭다운/메뉴/모달 공통 */
+  --menu-bg: #111827;      /* 어두운 바탕 */
+  --menu-fg: #F9FAFB;      /* 항목 텍스트 */
+  --menu-fg-dim: #D1D5DB;  /* 비활성/설명 */
+  --menu-hover: rgba(144,103,198,0.25);
+  --menu-border: rgba(255,255,255,0.15);
 }
 
-/* ===== [02] App Base ===================================================== */
-.stApp{
+html, body, .stApp{
   background-color: var(--bg) !important;
   color: var(--fg) !important;
   font-family: 'Noto Sans KR', system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
 }
+
+/* 헤더 투명 */
+[data-testid="stHeader"], [data-testid="stToolbar"]{
+  background: transparent !important;
+}
+
+/* 제목/헤딩 색상 보장 */
 h1,h2,h3,h4,h5,h6{ color: var(--fg) !important; }
-[data-testid="stHeader"], [data-testid="stToolbar"]{ background: transparent !important; }
 
-/* ===== [03] Sidebar (항상 보이고, 대비 강화) ============================== */
-[data-testid="stSidebar"]{
-  display:block !important;
-  background: var(--sidebar-bg) !important;
-  backdrop-filter: blur(8px);
-  border-right: 1px solid var(--sidebar-br);
-}
-[data-testid="stSidebar"] *{
-  color: var(--fg) !important;
-}
+/* ===== [02] SIDEBAR 가독성 ================================================= */
+[data-testid="stSidebar"]{ display:block !important; }
+[data-testid="stSidebar"] *{ color: var(--fg) !important; }
 
-/* ===== [04] Labels / Help / Legend (더 진하게) =========================== */
-.stTextInput>label, .stSelectbox>label, .stSlider>label, .stRadio>label,
-.stFileUploader>label, .stNumberInput>label, .stPassword>label,
-.stMultiSelect>label, .stDateInput>label{
+/* ===== [03] LABELS/HELP/캡션 색 보정 ====================================== */
+.stTextInput>label,
+.stSelectbox>label,
+.stSlider>label,
+.stRadio>label,
+.stFileUploader>label,
+.stNumberInput>label,
+.stMarkdown p small,
+[data-testid="stCaptionContainer"] *{
   color: var(--fg-dim) !important;
-  font-weight: 700 !important;
+  font-weight: 600;
 }
 
-/* ===== [05] Inputs (text/password/textarea/select) ======================= */
-/* 공통 인풋 박스 */
+/* ===== [04] INPUTS(텍스트/비밀번호/에어리어/넘버) ========================= */
 [data-testid="stTextInput"] input,
-[data-testid="stPassword"] input,
-input[type="text"], input[type="password"], textarea{
+input[type="text"],
+input[type="password"],
+textarea,
+[data-baseweb="textarea"] textarea,
+.stNumberInput input{
   background-color: var(--input-bg) !important;
   border: 1px solid var(--input-border) !important;
   color: var(--fg) !important;
@@ -63,44 +67,96 @@ input[type="text"], input[type="password"], textarea{
   border-radius: 10px !important;
 }
 
-/* placeholder를 더 진하게 */
 [data-testid="stTextInput"] input::placeholder,
-[data-testid="stPassword"]  input::placeholder,
-textarea::placeholder{
-  color: var(--muted) !important;
+textarea::placeholder,
+[data-baseweb="textarea"] textarea::placeholder{
+  color: var(--muted) !important; /* 진한 placeholder */
 }
 
-/* 포커스 시 더 선명하게 */
-[data-testid="stTextInput"] input:focus,
-[data-testid="stPassword"]  input:focus,
-textarea:focus{
-  outline: none !important;
-  border-color: var(--input-focus) !important;
-  box-shadow: 0 0 0 2px rgba(166,133,219,0.25) !important;
-}
-
-/* Select(내부 baseweb 컴포넌트 색상 보정) */
+/* ===== [05] SELECT/드롭다운(열린 목록 포함) =============================== */
+/* 셀렉트 박스 본체 */
 .stSelectbox [data-baseweb="select"] *{
   color: var(--fg) !important;
 }
-.stSelectbox [data-baseweb="select"] *::placeholder{
-  color: var(--muted) !important;
-}
-.stSelectbox [data-baseweb="select"] div{
-  background-color: transparent !important;
+.stSelectbox [data-baseweb="select"]{
+  background-color: var(--input-bg) !important;
+  border: 1px solid var(--input-border) !important;
+  border-radius: 10px !important;
 }
 
-/* 라디오/체크박스 라벨 대비 */
-.stRadio label, .stCheckbox label{
+/* 펼쳐진 ‘메뉴’(BaseWeb) */
+div[role="listbox"],
+[data-baseweb="popover"],
+[data-baseweb="menu"]{
+  background: var(--menu-bg) !important;
+  color: var(--menu-fg) !important;
+  border: 1px solid var(--menu-border) !important;
+  border-radius: 10px !important;
+  box-shadow: 0 10px 24px rgba(0,0,0,.35) !important;
+}
+
+/* 항목/hover */
+[data-baseweb="menu"] div[role="option"],
+div[role="listbox"] div[role="option"]{
+  color: var(--menu-fg) !important;
+}
+[data-baseweb="menu"] div[role="option"][aria-selected="true"],
+[data-baseweb="menu"] div[role="option"]:hover{
+  background: var(--menu-hover) !important;
+}
+
+/* ===== [06] FILE UPLOADER/드롭존 ========================================= */
+[data-testid="stFileUploadDropzone"]{
+  background: var(--panel) !important;
+  border: 1px dashed var(--input-border) !important;
+  color: var(--fg) !important;
+  border-radius: 12px !important;
+}
+[data-testid="stFileUploadDropzone"] *{
   color: var(--fg) !important;
 }
 
-/* ===== [06] Buttons ====================================================== */
+/* 업로더 내부 팝오버/모달(화이트 바탕 방지) */
+.stFileUploader [data-baseweb="popover"],
+.stFileUploader [data-baseweb="menu"]{
+  background: var(--menu-bg) !important;
+  color: var(--menu-fg) !important;
+  border: 1px solid var(--menu-border) !important;
+}
+
+/* ===== [07] CHAT(말풍선/입력창) =========================================== */
+/* 대화 말풍선 */
+[data-testid="stChatMessage"]{
+  background-color: var(--panel);
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: 12px;
+  padding: 1rem;
+  margin-bottom: 1rem;
+}
+[data-testid="stChatMessage"] p,
+[data-testid="stChatMessage"] li{
+  color: var(--fg) !important;
+}
+
+/* 챗 입력창(관리자 버튼 클릭 후 흰바탕/흰글씨 문제 해결) */
+[data-testid="stChatInput"] textarea,
+[data-testid="stChatInput"] input{
+  background-color: var(--input-bg) !important;
+  border: 1px solid var(--input-border) !important;
+  color: var(--fg) !important;
+  border-radius: 12px !important;
+}
+[data-testid="stChatInput"] textarea::placeholder{
+  color: var(--muted) !important;
+}
+
+/* ===== [08] BUTTONS ======================================================= */
 .stButton>button{
   border-radius: 999px;
   border: 2px solid var(--accent);
   background-color: var(--accent);
-  color: #fff; font-weight: 800;
+  color: #fff;
+  font-weight: 700;
   padding: 10px 20px;
   transition: .2s ease;
 }
@@ -110,39 +166,47 @@ textarea:focus{
   border-color: var(--accent-2);
 }
 
-/* ===== [07] Panels / Alerts / Expander ================================== */
+/* ===== [09] ALERTS/INFO/PROGRESS ========================================= */
 [data-testid="stAlert"]{
   background: var(--panel-2) !important;
-  border: 1px solid rgba(255,255,255,0.15) !important;
-  border-radius: 12px !important;
+  border: 1px solid rgba(255,255,255,0.12) !important;
+  border-radius: 10px !important;
 }
 [data-testid="stAlert"] p{ color: var(--fg) !important; }
 
-/* expander 헤더/본문 대비 */
-.st-expanderHeader, .stExpanderHeader{
-  color: var(--fg) !important;
-}
-.stExpander{ background: transparent !important; }
-
-/* ===== [08] Chat Bubbles ================================================= */
-[data-testid="stChatMessage"]{
-  background-color: var(--panel);
-  border: 1px solid rgba(255,255,255,0.10);
-  border-radius: 12px; padding: 1rem; margin-bottom: 1rem;
-}
-[data-testid="stChatMessage"] p, [data-testid="stChatMessage"] li{
-  color: var(--fg) !important;
-}
-
-/* ===== [09] Progress / Helper Text ====================================== */
+/* 커스텀 진행 메시지(기본 progress 아래 부가 문구) */
 .gp-msg{
-  margin-top:.5rem; color:#F7FAFC; opacity:.95; font-size:0.95rem;
+  margin-top:.5rem;
+  color: var(--fg);
+  opacity:.95;
+  font-size:0.95rem;
 }
 
-/* ===== [10] Code / Logs ================================================== */
-pre, code{ color:#CFE3FF !important; }
+/* ===== [10] CODE/LOG 패널(흰 배경 방지) ================================== */
+pre, code, .stCodeBlock, .stMarkdown pre{
+  background: var(--panel-2) !important;
+  color:#CFE3FF !important;
+  border: 1px solid rgba(255,255,255,0.12) !important;
+  border-radius: 10px !important;
+}
 
-/* ===== [11] (선택) 작은 입력 박스 높이 보정 ============================== */
-[data-testid="stTextInput"] input,
-[data-testid="stPassword"] input{ height: 42px !important; }
-textarea{ min-height: 120px !important; }
+/* ===== [11] STEP SCALE(선형 눈금) ======================================== */
+.step-scale{
+  display:flex;
+  gap:14px;
+  align-items:center;
+  margin:6px 0 12px 0;
+}
+.step-mark{
+  color:#9CA3AF;
+  font-weight:700;
+  font-size:.9rem;
+  padding:2px 10px;
+  border-radius:999px;
+  border:1px dashed rgba(255,255,255,.2);
+}
+.step-filled{
+  color:var(--bg);
+  background:linear-gradient(90deg,#7c5ad9,#9067C6);
+  border:1px solid transparent;
+}
