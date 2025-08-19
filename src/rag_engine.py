@@ -39,12 +39,16 @@ class LlamaInitFailed(RAGEngineError): ...
 class QueryEngineNotReady(RAGEngineError): ...
 
 # ===== [04] 콜백 유틸 ========================================================
+import logging
+log = logging.getLogger(__name__)
+
 def _safe(cb: Optional[Callable[..., Any]], *a: Any, **kw: Any) -> None:
     try:
         if cb:
             cb(*a, **kw)
-    except Exception:
-        pass  # 콜백 오류는 삼킨다(진행 방해 X)
+    except Exception as e:
+        # 콜백 오류는 진행 방해하지 않고 디버깅에만 남긴다.
+        log.debug("suppressed callback error: %r", e)
 
 def _emit(
     update_pct: Optional[Callable[[int], None]] = None,
