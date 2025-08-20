@@ -4,6 +4,7 @@ import os, sys, time, traceback, datetime as dt
 from pathlib import Path
 from typing import Any
 import streamlit as st
+from src.rag.probe_drive import render_probe_panel; render_probe_panel()
 
 os.environ["STREAMLIT_SERVER_FILE_WATCHER_TYPE"] = "none"
 os.environ["STREAMLIT_RUN_ON_SAVE"] = "false"
