@@ -14,16 +14,20 @@ from src.config import settings, QUALITY_REPORT_PATH
 # logger
 log = logging.getLogger(__name__)
 
-# LlamaIndex 문서 모델(버전 호환: 0.12.x 우선 → 구버전 → 최후엔 Any로 대체)
+# LlamaIndex 문서 모델(버전 호환: 0.12.x 우선 → 구버전 → 최후엔 최소 스텁 클래스)
 try:
     from llama_index.core.schema import Document  # 0.12.x+
 except Exception:
     try:
-        from llama_index.core import Document     # old fallback
+        from llama_index.core import Document     # older versions
     except Exception:
-        from typing import Any as Document        # final stub (for type-checkers only)
+        class Document:  # 최소한의 런타임/타입 호환 스텁
+            def __init__(self, text: str = "", metadata: Dict[str, Any] | None = None) -> None:
+                self.text = text
+                self.metadata = metadata or {}
 
 _ws_re = re.compile(r"[ \t\f\v]+")
+
 
 # ===== [02] TEXT CLEANERS ====================================================
 def _clean_text(s: str) -> str:
