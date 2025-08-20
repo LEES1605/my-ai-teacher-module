@@ -14,11 +14,14 @@ from src.config import settings, QUALITY_REPORT_PATH
 # logger
 log = logging.getLogger(__name__)
 
-# LlamaIndex 문서 모델(버전 호환)
+# LlamaIndex 문서 모델(버전 호환: 0.12.x 우선 → 구버전 → 최후엔 Any로 대체)
 try:
-    from llama_index.core.schema import Document  # pragma: no cover
-except Exception:  # 안전 폴백
-    from llama_index.core import Document  # type: ignore[no-redef]
+    from llama_index.core.schema import Document  # 0.12.x+
+except Exception:
+    try:
+        from llama_index.core import Document     # old fallback
+    except Exception:
+        from typing import Any as Document        # final stub (for type-checkers only)
 
 _ws_re = re.compile(r"[ \t\f\v]+")
 
